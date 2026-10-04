@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.dst
+*.pes
+*.jef
+*.exp
+*.vp3
+*.pec
+*.xxx
+*.u01

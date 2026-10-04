@@ -1,0 +1,4 @@
+pyembroidery>=1.5
+svgelements>=1.9
+Pillow>=10
+numpy>=1.24
