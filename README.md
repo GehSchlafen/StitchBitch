@@ -77,7 +77,7 @@ Der andere entpackt, hat Python 3 + Internet (nur beim ersten Start) und macht:
 | `--ignore-color RRGGBB` | – | diese Farbe komplett nicht sticken, mehrfach moeglich |
 | `--keep-background` | – | randverbundenen Hintergrund NICHT entfernen (1:1, alles sticken) |
 | `--outline` | – | zusaetzlich Randlinien je Farbe als Laufstich (fuer duenne Konturen) |
-| `--border-color RRGGBB` | – | Patch-Rand um das Motiv in dieser Farbe |
+| `--border-color RRGGBB` | – | Patch-Rand entlang der Motiv-Silhouette in dieser Farbe |
 | `--border-width` | `3` | Randstaerke in mm; `--width` zaehlt inkl. Rand |
 | `--preview` | – | zusaetzlich Vorschau-PNG schreiben |
 
@@ -121,8 +121,9 @@ Canvas, der Server bekommt danach das editierte PNG:
 - **Farbe ersetzen**: aufgenommene Farbe global durch die Zielfarbe tauschen
   (z. B. Weiß -> Rot), inkl. Antialiasing-Toleranz.
 - **↶ Undo**, **Reset** (Original), **Größe** = Pinselradius.
-- **Patch-Rand**: Häkchen, Stärke in mm und Farbe. Legt einen Rand (Umrandung) um
-  das Motiv; die eingestellte Breite zählt als Gesamtgröße inkl. Rand.
+- **Patch-Rand**: Häkchen, Stärke in mm und Farbe. Legt einen Rand entlang der
+  **Motiv-Silhouette** (nicht als Rechteck) an; die eingestellte Breite zählt als
+  Gesamtgröße inkl. Rand.
 - Nach dem Editieren ggf. **Palette aktualisieren**; dann **Stricken**.
 
 Laeuft ohne Framework (nur Python-Stdlib, `http.server`) und ohne Upload zu

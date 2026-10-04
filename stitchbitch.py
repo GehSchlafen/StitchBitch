@@ -18,8 +18,8 @@ Ponytail-Bauentscheidungen (bewusst, nicht vergessen):
   ausgeschlossen, sonst entstehen Mischfarben als eigene Faeden (Flecken).
 - Optional --outline: Randlinien je Farbe als Laufstich (gut fuer duenne
   schwarze Konturen, kann bei Schrift/Randloechern groesserer Flaechen stoeren).
-- Patch-Rand (make_border/border_points): konzentrische Rechtecke um die Motiv-
-  Bounding-Box, Farbe und Staerke vom User. --width zaehlt inkl. Rand.
+- Patch-Rand (silhouette_border): Motivflaechen aufblasen, Original abziehen ->
+  Rand entlang der Silhouette; Farbe und Staerke vom User. --width inkl. Rand.
 - Stickdichte ist groessenadaptiv (auto_stitch): ~STITCHES_ACROSS Stiche ueber
   die Breite, damit jede Stickgroesse gleich detailliert ist. --stitch/--row
   ueberschreiben.
@@ -321,41 +321,21 @@ def stroke_points(polylines_px, mm_per_px, stitch_mm):
     return out
 
 
-def border_points(x0, y0, x1, y1, width_mm, stitch_mm, row_mm):
-    """Patch-Rand: konzentrische Rechtecke um die Motiv-Bounding-Box.
-    width_mm = Randstaerke, gefuellt mit ringen im Abstand row_mm. -> [(x,y,pen)]."""
-    width_mm = max(0.0, float(width_mm))
-    if width_mm <= 0:
-        return []
-    step = max(row_mm, 0.05)
-    stitch = max(stitch_mm, 0.2)
-    n = max(1, int(round(width_mm / step)))
-    out = []
-    for k in range(n):
-        d = step * (k + 0.5)
-        rx0, ry0, rx1, ry1 = x0 - d, y0 - d, x1 + d, y1 + d
-        ring = [(rx0, ry0), (rx1, ry0), (rx1, ry1), (rx0, ry1), (rx0, ry0)]
-        line = resample(ring, stitch)
-        if len(line) < 2:
-            continue
-        out.append((line[0][0], line[0][1], 0))  # Sprung zum Randanfang
-        out.extend((x, y, 1) for x, y in line)
-    return out
-
-
-def make_border(args, report):
-    """Rand-Parameter aus CLI/Web-Args bauen (None = kein Rand)."""
-    color = getattr(args, "border_color", None)
-    if not color:
+def border_color(args):
+    c = getattr(args, "border_color", None)
+    if not c:
         return None
-    if not str(color).startswith("#"):
-        color = "#" + str(color)
-    return {
-        "color": color,
-        "width": float(getattr(args, "border_width", 3.0) or 0.0),
-        "stitch": float(report.get("stitch_mm") or 1.0),
-        "row": float(report.get("row_mm") or 0.3),
-    }
+    return c if str(c).startswith("#") else "#" + str(c)
+
+
+def silhouette_border(mask, mm_per_px, width_mm, stitch_mm, row_mm, angle):
+    """Rand, der der Motiv-Silhouette folgt: Motiv aufblasen, Original abziehen.
+    -> Stichpunkte (px) fuer den Randbereich."""
+    radius = int(round(max(0.0, width_mm) / mm_per_px))
+    if radius <= 0 or not mask.any():
+        return []
+    ring = _dilate(mask, radius) & ~mask
+    return fill_mask(ring, mm_per_px, stitch_mm, row_mm, angle)
 
 
 def to_mm(points, mm_per_px):
@@ -630,6 +610,13 @@ def load_raster_blocks(path, args, report=None):
                 pts.extend((x, y, 1) for x, y in line)
         if pts:
             blocks.append((hex_of(color), to_mm(pts, mm_per_px)))
+
+    # Patch-Rand entlang der Silhouette (Union aller Motivflaechen).
+    bcol = border_color(args)
+    if bcol and getattr(args, "border_width", 0) > 0:
+        bpts = silhouette_border(anymask, mm_per_px, args.border_width, stitch_mm, row_mm, args.angle)
+        if bpts:
+            blocks.append((bcol, to_mm(bpts, mm_per_px)))
     return blocks
 
 
@@ -658,6 +645,15 @@ def _subpaths(segs):
     if cur and len(cur) > 1:
         subs.append(cur)
     return subs
+
+
+def _rasterize_lines(polys, w, h, width):
+    im = Image.new("1", (w, h), 0)
+    d = ImageDraw.Draw(im)
+    for pl in polys:
+        if len(pl) >= 2:
+            d.line([(float(x), float(y)) for x, y in pl], fill=1, width=max(1, int(width)))
+    return np.asarray(im, dtype=bool)
 
 
 def _rasterize(subs_px, w, h):
@@ -730,6 +726,20 @@ def load_svg_blocks(path, args, report=None):
         pts = stroke_points(polys, mm_per_px, stitch_mm)
         if pts:
             blocks.append((stroke, to_mm(pts, mm_per_px)))
+
+    # Patch-Rand entlang der Silhouette (Fuellungen + Striche).
+    bcol = border_color(args)
+    if bcol and getattr(args, "border_width", 0) > 0:
+        anymask = np.zeros((h, w), dtype=bool)
+        for mask in fills.values():
+            anymask |= mask
+        if strokes:
+            anymask |= _rasterize_lines(
+                [p for polys in strokes.values() for p in polys], w, h, max(2, int(round(0.3 / mm_per_px)))
+            )
+        bpts = silhouette_border(anymask, mm_per_px, args.border_width, stitch_mm, row_mm, args.angle)
+        if bpts:
+            blocks.append((bcol, to_mm(bpts, mm_per_px)))
     if report is not None:
         report["accuracy"] = 1.0  # Vektor: Farben sind exakt
         report["colors_used"] = len(fills) + len(strokes)
@@ -775,7 +785,7 @@ def _move(pattern, x, y, limit=100.0):
         pattern.move_abs(lx + (x - lx) * k / n, ly + (y - ly) * k / n)
 
 
-def build_pattern(blocks, rotate_deg=0.0, border=None):
+def build_pattern(blocks, rotate_deg=0.0):
     # Auf den Ursprung zentrieren: sonst blaehen die Anfahrt-Spruenge von (0,0)
     # die Bounding-Box auf.
     pts_all = [p for _, pts in blocks for p in pts]
@@ -793,15 +803,6 @@ def build_pattern(blocks, rotate_deg=0.0, border=None):
             (c, [(x * ct - y * st, x * st + y * ct, pen) for x, y, pen in pts])
             for c, pts in blocks
         ]
-
-    # Patch-Rand um die (gedrehte) Bounding-Box; symmetrisch, Motiv bleibt zentriert.
-    if border and border.get("color") and border.get("width", 0) > 0:
-        bxs = [p[0] for _, pts in blocks for p in pts]
-        bys = [p[1] for _, pts in blocks for p in pts]
-        ring = border_points(min(bxs), min(bys), max(bxs), max(bys),
-                             border["width"], border["stitch"], border["row"])
-        if ring:
-            blocks.append((border["color"], ring))
 
     # Gleiche Farbe aufeinanderfolgend zusammenfassen
     merged = []
@@ -897,7 +898,7 @@ class _Handler(BaseHTTPRequestHandler):
             loader = load_svg_blocks if suffix == ".svg" else load_raster_blocks
             report = {}
             blocks = loader(src, args, report)
-            pattern = build_pattern(blocks, args.rotate, make_border(args, report))
+            pattern = build_pattern(blocks, args.rotate)
             if not pattern.stitches:
                 raise ValueError("Keine Stiche erzeugt.")
             pv = io.BytesIO()
@@ -997,7 +998,7 @@ def main(argv=None):
         blocks = loader(src, args, report)
     except MotifError as exc:
         raise SystemExit(str(exc))
-    pattern = build_pattern(blocks, args.rotate, make_border(args, report))
+    pattern = build_pattern(blocks, args.rotate)
     if not pattern.stitches:
         raise SystemExit("Keine Stiche erzeugt.")
 
