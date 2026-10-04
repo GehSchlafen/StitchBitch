@@ -81,6 +81,13 @@ Der andere entpackt, hat Python 3 + Internet (nur beim ersten Start) und macht:
 | `--border-width` | `3` | Randstaerke in mm; `--width` zaehlt inkl. Rand |
 | `--preview` | – | zusaetzlich Vorschau-PNG schreiben |
 
+### Zusammenhaengende Stickerei (wenige Spruenge/Schnitte)
+
+Die Stiche werden so geordnet, dass zusammenhaengende Bereiche als ein Faden
+gestickt werden. Luecken, die von anderen Motivfarben bedeckt sind, werden kurz
+ueberstochen (spaeter verdeckt), nur echte Hintergrund-Luecken werden gesprungen.
+Statt ~1500 Schnitten pro Logo sind es jetzt typisch < 100.
+
 ### Gleiche Genauigkeit bei jeder Groesse
 
 Die Stickdichte wird automatisch an die fertige Breite angepasst: Ziel sind

@@ -20,6 +20,9 @@ Ponytail-Bauentscheidungen (bewusst, nicht vergessen):
   schwarze Konturen, kann bei Schrift/Randloechern groesserer Flaechen stoeren).
 - Patch-Rand (silhouette_border): Motivflaechen aufblasen, Original abziehen ->
   Rand entlang der Silhouette; Farbe und Staerke vom User. --width inkl. Rand.
+- Verbindung: Runs werden per Nearest-Neighbor geordnet; Luecken, die von anderen
+  Motivfarben bedeckt sind, werden kurz ueberstochen, sonst gesprungen/geschnitten.
+  -> wenige Spruenge/Trim statt hunderte (Stickdatei bleibt zusammenhaengend).
 - Stickdichte ist groessenadaptiv (auto_stitch): ~STITCHES_ACROSS Stiche ueber
   die Breite, damit jede Stickgroesse gleich detailliert ist. --stitch/--row
   ueberschreiben.
@@ -85,10 +88,47 @@ def _runs(idx: np.ndarray):
         yield int(idx[s]), int(idx[e])
 
 
-def fill_mask(mask, mm_per_px, stitch_mm, row_mm, angle_deg, bridge_mm=None):
+def _order_runs(runs):
+    """Runs per Nearest-Neighbor ordnen (verbindet Baender/Konturen)."""
+    n = len(runs)
+    if n <= 2:
+        return runs
+    mids = np.array([[(r[0][0] + r[-1][0]) / 2.0, (r[0][1] + r[-1][1]) / 2.0] for r in runs])
+    used = np.zeros(n, dtype=bool)
+    used[0] = True
+    order = [0]
+    cur = mids[0]
+    for _ in range(n - 1):
+        dx = mids[:, 0] - cur[0]
+        dy = mids[:, 1] - cur[1]
+        d = dx * dx + dy * dy
+        d[used] = np.inf
+        j = int(d.argmin())
+        used[j] = True
+        order.append(j)
+        cur = mids[j]
+    return [runs[j] for j in order]
+
+
+def _covered(cover, x0, y0, x1, y1):
+    """Liegt die Strecke zwischen zwei Runs auf anderen Motivflaechen (nicht Hintergrund)?"""
+    n = int(min(16, max(3, math.hypot(x1 - x0, y1 - y0))))
+    xs = np.linspace(x0, x1, n)[1:-1]
+    ys = np.linspace(y0, y1, n)[1:-1]
+    ix = np.rint(xs).astype(np.int64)
+    iy = np.rint(ys).astype(np.int64)
+    h, w = cover.shape
+    ok = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+    if not ok.any():
+        return False
+    return float(cover[iy[ok], ix[ok]].mean()) >= 0.7
+
+
+def fill_mask(mask, mm_per_px, stitch_mm, row_mm, angle_deg, bridge_mm=None,
+              cover=None, max_bridge_mm=4.0):
     """Serpentinenfuellung eines bool-Masks (y zeigt nach unten). -> [(x_px, y_px, pen)].
-    Luecken werden nur ueberbrueckt, wenn sie winzig sind (sonst Sprung -> Fadenschnitt),
-    damit Fuellung nicht quer durch Loecher/Schrift stickt."""
+    Luecken werden uebersticht, wenn winzig ODER von anderen Motivfarben bedeckt und
+    nicht zu gross; nur echte Hintergrund-Luecken (oder sehr grosse) werden gesprungen."""
     if bridge_mm is None:
         bridge_mm = 1.5 * row_mm
     h, w = mask.shape
@@ -117,12 +157,24 @@ def fill_mask(mask, mm_per_px, stitch_mm, row_mm, angle_deg, bridge_mm=None):
             n = max(1, int(round(math.hypot(x1 - x0, y1 - y0) / stitch_px)))
             runs.append([(x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n) for k in range(n + 1)])
 
+    # Runs nach Naehe ordnen: stickt zusammenhaengende Baender komplett statt
+    # zeilenweise hin und her (viel weniger Spruenge, z. B. bei Rahmen/Konturen).
+    if len(runs) <= 4000:
+        runs = _order_runs(runs)
+
     out = []
     for run in runs:
         if out:
-            d = math.hypot(run[0][0] - out[-1][0], run[0][1] - out[-1][1]) * mm_per_px
-            if d > bridge_mm:
-                out.append((run[0][0], run[0][1], 0))  # weiter Sprung -> als Jump markieren
+            a = out[-1]
+            if math.hypot(run[-1][0] - a[0], run[-1][1] - a[1]) < math.hypot(run[0][0] - a[0], run[0][1] - a[1]):
+                run = run[::-1]  # naeheres Ende zuerst
+            b = run[0]
+            d = math.hypot(b[0] - a[0], b[1] - a[1]) * mm_per_px
+            bridge = d <= bridge_mm or (
+                d <= max_bridge_mm and cover is not None and _covered(cover, a[0], a[1], b[0], b[1])
+            )
+            if not bridge:
+                out.append((b[0], b[1], 0))  # Hintergrund/gross -> Sprung
         out.extend((x, y, 1) for x, y in run)
     return out
 
@@ -319,6 +371,21 @@ def stroke_points(polylines_px, mm_per_px, stitch_mm):
             out.append((pts[0][0], pts[0][1], 0))
         out.extend((x, y, 1) for x, y in pts)
     return out
+
+
+def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, cover, outline=False):
+    """Einen Farbbereich fuellen (Runs naehe-sortiert, ueberdecktes Ueberstechen);
+    optional zusaetzlich Randlinien als Laufstich."""
+    pts = fill_mask(mask, mm_per_px, stitch_mm, row_mm, angle, cover=cover)
+    if outline:
+        stitch_px = max(stitch_mm / mm_per_px, 1.0)
+        for loop in _mask_contours(mask):
+            line = resample(_rdp(loop, 1.5), stitch_px)
+            if len(line) < 2:
+                continue
+            pts.append((line[0][0], line[0][1], 0))
+            pts.extend((x, y, 1) for x, y in line)
+    return pts
 
 
 def border_color(args):
@@ -586,6 +653,7 @@ def load_raster_blocks(path, args, report=None):
     anymask = np.zeros(opaque.shape, dtype=bool)
     for _, _, m in layers:
         anymask |= m
+    layers.sort(key=lambda t: -int(t[2].sum()))  # grosse Flaechen unten, Details oben
     ys, xs = np.nonzero(anymask)
     box_w = int(xs.max() - xs.min()) + 1
     mm_per_px = scale_for(box_w, int(ys.max() - ys.min()) + 1, args)
@@ -595,19 +663,9 @@ def load_raster_blocks(path, args, report=None):
         report["row_mm"] = round(row_mm, 2)
 
     outline = getattr(args, "outline", False)
-    stitch_px = max(stitch_mm / mm_per_px, 1.0)
     blocks = []
     for _, color, m in layers:
-        pts = fill_mask(m, mm_per_px, stitch_mm, row_mm, args.angle)
-        if outline:
-            # Randlinien als Laufstich: macht duenne Konturen/Schrift solide,
-            # wo die Hatch-Fuellung nur Punkte setzen wuerde.
-            for loop in _mask_contours(m):
-                line = resample(_rdp(loop, 1.5), stitch_px)
-                if len(line) < 2:
-                    continue
-                pts.append((line[0][0], line[0][1], 0))  # Sprung zum Rand
-                pts.extend((x, y, 1) for x, y in line)
+        pts = layer_stitches(m, mm_per_px, stitch_mm, row_mm, args.angle, anymask, outline)
         if pts:
             blocks.append((hex_of(color), to_mm(pts, mm_per_px)))
 
@@ -716,9 +774,17 @@ def load_svg_blocks(path, args, report=None):
 
     stitch_mm, row_mm = auto_stitch(box_w * mpu, args)
 
+    anymask = np.zeros((h, w), dtype=bool)
+    for mask in fills.values():
+        anymask |= mask
+    if strokes:
+        anymask |= _rasterize_lines(
+            [p for polys in strokes.values() for p in polys], w, h, max(2, int(round(0.3 / mm_per_px)))
+        )
+
     blocks = []
     for fill, mask in sorted(fills.items(), key=lambda kv: -int(kv[1].sum())):
-        pts = fill_mask(mask, mm_per_px, stitch_mm, row_mm, args.angle)
+        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, args.angle, anymask, False)
         if pts:
             blocks.append((fill, to_mm(pts, mm_per_px)))
     # Striche zuletzt (liegen obenauf)
@@ -730,13 +796,6 @@ def load_svg_blocks(path, args, report=None):
     # Patch-Rand entlang der Silhouette (Fuellungen + Striche).
     bcol = border_color(args)
     if bcol and getattr(args, "border_width", 0) > 0:
-        anymask = np.zeros((h, w), dtype=bool)
-        for mask in fills.values():
-            anymask |= mask
-        if strokes:
-            anymask |= _rasterize_lines(
-                [p for polys in strokes.values() for p in polys], w, h, max(2, int(round(0.3 / mm_per_px)))
-            )
         bpts = silhouette_border(anymask, mm_per_px, args.border_width, stitch_mm, row_mm, args.angle)
         if bpts:
             blocks.append((bcol, to_mm(bpts, mm_per_px)))
