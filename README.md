@@ -28,7 +28,7 @@ Bild oder SVG -> Stickdatei. Lokales CLI, keine Cloud.
 
 ```bash
 cd ./StitchBitch
-./run.sh --help                 
+./run.sh --help                 # legt beim 1. Mal venv an + installiert, dann CLI
 ./run.sh --serve                # Web-UI auf http://127.0.0.1:8000
 ```
 
@@ -44,7 +44,7 @@ python3 -m venv .venv
 Es gibt nichts zu kompilieren (reines Python). Ordner weitergeben bzw. Tarball:
 
 ```bash
-tar --exclude=.venv --exclude=__pycache__ -czf StitchBitch.tar.gz .StitchBitch
+tar --exclude=.venv --exclude=__pycache__ --exclude=.git -czf StitchBitch.tar.gz StitchBitch   # im Elternordner ausfuehren
 ```
 
 Der andere entpackt, hat Python 3 + Internet (nur beim ersten Start) und macht:
@@ -77,6 +77,8 @@ Der andere entpackt, hat Python 3 + Internet (nur beim ersten Start) und macht:
 | `--ignore-color RRGGBB` | – | diese Farbe komplett nicht sticken, mehrfach moeglich |
 | `--keep-background` | – | randverbundenen Hintergrund NICHT entfernen (1:1, alles sticken) |
 | `--outline` | – | zusaetzlich Randlinien je Farbe als Laufstich (fuer duenne Konturen) |
+| `--border-color RRGGBB` | – | Patch-Rand um das Motiv in dieser Farbe |
+| `--border-width` | `3` | Randstaerke in mm; `--width` zaehlt inkl. Rand |
 | `--preview` | – | zusaetzlich Vorschau-PNG schreiben |
 
 ### Gleiche Genauigkeit bei jeder Groesse
@@ -119,6 +121,8 @@ Canvas, der Server bekommt danach das editierte PNG:
 - **Farbe ersetzen**: aufgenommene Farbe global durch die Zielfarbe tauschen
   (z. B. Weiß -> Rot), inkl. Antialiasing-Toleranz.
 - **↶ Undo**, **Reset** (Original), **Größe** = Pinselradius.
+- **Patch-Rand**: Häkchen, Stärke in mm und Farbe. Legt einen Rand (Umrandung) um
+  das Motiv; die eingestellte Breite zählt als Gesamtgröße inkl. Rand.
 - Nach dem Editieren ggf. **Palette aktualisieren**; dann **Stricken**.
 
 Laeuft ohne Framework (nur Python-Stdlib, `http.server`) und ohne Upload zu

@@ -20,6 +20,7 @@
   #dl { display:none; text-align:center; text-decoration:none; color:#0b0d10; background:#37d07a; border-color:#37d07a }
   #status { font-size:12px; color:#8a919c; min-height:16px }
   .hint { font-size:12px; color:#8a919c }
+  .chk { flex-direction:row; align-items:center; gap:6px; color:#b7bcc4; font-size:13px }
   .palette { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:6px }
   .sw { flex-direction:row; align-items:center; gap:5px; padding:3px 7px; border:1px solid #333a44; border-radius:8px;
         background:#1b1f26; cursor:pointer; font-size:12px; color:#cfd3da }
@@ -55,6 +56,11 @@
     </div>
     <label>Motiv drehen <span id="rotval">0&deg;</span>
       <input id="rotate" type="range" min="-180" max="180" step="1" value="0"></label>
+    <div class="row">
+      <label class="chk"><input id="borden" type="checkbox"> Patch-Rand</label>
+      <label>Rand mm<input id="bwidth" type="number" value="3" min="0.5" step="0.5"></label>
+      <label>Randfarbe<input id="bcolor" type="color" value="#000000"></label>
+    </div>
     <div id="palette-wrap" style="display:none">
       <div class="hint" id="palhint">Palette - abwaehlen = nicht sticken. (BG) = Hintergrund.</div>
       <div id="palette" class="palette"></div>
@@ -289,7 +295,8 @@ $('form').addEventListener('submit', async ev => {
   const q = new URLSearchParams({
     filename: srcName, format: $('format').value, width: $('width').value, colors: $('colors').value,
     stitch: $('stitch').value, row: $('row').value, angle: $('angle').value, rotate: $('rotate').value,
-    merge: $('merge').value, ignore, bgcolor
+    merge: $('merge').value, ignore, bgcolor,
+    bcolor: $('borden').checked ? $('bcolor').value : '', bwidth: $('bwidth').value
   });
   const btn = $('go'); btn.disabled = true; $('status').textContent = 'Stricke ...'; $('dl').style.display = 'none';
   try {
@@ -309,7 +316,7 @@ $('form').addEventListener('submit', async ev => {
     const acc = (typeof j.accuracy === 'number') ? ' \u00b7 Treffer ' + (j.accuracy * 100).toFixed(1) + '%' : '';
     const dens = j.stitch_mm ? ' \u00b7 Stich/Reihe ' + j.stitch_mm + '/' + j.row_mm + ' mm' : '';
     $('status').textContent = j.stitches + ' Stiche \u00b7 ' + j.width_mm + '\u00d7' + j.height_mm + ' mm \u00b7 '
-      + j.blocks + ' Block(e)' + dens + acc;
+      + j.blocks + ' Farben' + dens + acc;
   } catch (e) { $('status').textContent = 'Fehler: ' + e.message; }
   finally { btn.disabled = false; }
 });

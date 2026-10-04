@@ -18,6 +18,8 @@ Ponytail-Bauentscheidungen (bewusst, nicht vergessen):
   ausgeschlossen, sonst entstehen Mischfarben als eigene Faeden (Flecken).
 - Optional --outline: Randlinien je Farbe als Laufstich (gut fuer duenne
   schwarze Konturen, kann bei Schrift/Randloechern groesserer Flaechen stoeren).
+- Patch-Rand (make_border/border_points): konzentrische Rechtecke um die Motiv-
+  Bounding-Box, Farbe und Staerke vom User. --width zaehlt inkl. Rand.
 - Stickdichte ist groessenadaptiv (auto_stitch): ~STITCHES_ACROSS Stiche ueber
   die Breite, damit jede Stickgroesse gleich detailliert ist. --stitch/--row
   ueberschreiben.
@@ -319,6 +321,43 @@ def stroke_points(polylines_px, mm_per_px, stitch_mm):
     return out
 
 
+def border_points(x0, y0, x1, y1, width_mm, stitch_mm, row_mm):
+    """Patch-Rand: konzentrische Rechtecke um die Motiv-Bounding-Box.
+    width_mm = Randstaerke, gefuellt mit ringen im Abstand row_mm. -> [(x,y,pen)]."""
+    width_mm = max(0.0, float(width_mm))
+    if width_mm <= 0:
+        return []
+    step = max(row_mm, 0.05)
+    stitch = max(stitch_mm, 0.2)
+    n = max(1, int(round(width_mm / step)))
+    out = []
+    for k in range(n):
+        d = step * (k + 0.5)
+        rx0, ry0, rx1, ry1 = x0 - d, y0 - d, x1 + d, y1 + d
+        ring = [(rx0, ry0), (rx1, ry0), (rx1, ry1), (rx0, ry1), (rx0, ry0)]
+        line = resample(ring, stitch)
+        if len(line) < 2:
+            continue
+        out.append((line[0][0], line[0][1], 0))  # Sprung zum Randanfang
+        out.extend((x, y, 1) for x, y in line)
+    return out
+
+
+def make_border(args, report):
+    """Rand-Parameter aus CLI/Web-Args bauen (None = kein Rand)."""
+    color = getattr(args, "border_color", None)
+    if not color:
+        return None
+    if not str(color).startswith("#"):
+        color = "#" + str(color)
+    return {
+        "color": color,
+        "width": float(getattr(args, "border_width", 3.0) or 0.0),
+        "stitch": float(report.get("stitch_mm") or 1.0),
+        "row": float(report.get("row_mm") or 0.3),
+    }
+
+
 def to_mm(points, mm_per_px):
     # pyembroidery rechnet selbst mit y nach unten (wie Bild/SVG); NICHT negieren,
     # sonst ist das Motiv vertikal gespiegelt.
@@ -328,9 +367,17 @@ def to_mm(points, mm_per_px):
 # ----------------------------------------------------------------------------- Skalierung
 
 def scale_for(box_w, box_h, args):
-    """mm pro Quell-Einheit, damit die Grafik in width/height passt."""
-    w = args.width if args.width > 0 else math.inf
-    h = args.height if args.height > 0 else math.inf
+    """mm pro Quell-Einheit, damit die Grafik in width/height passt. Ein Patch-Rand
+    zaehlt zur Gesamtgroesse und wird von width/height abgezogen."""
+    reserve = (
+        2.0 * float(getattr(args, "border_width", 0.0) or 0.0)
+        if getattr(args, "border_color", None)
+        else 0.0
+    )
+    w = args.width - reserve if args.width > 0 else math.inf
+    h = args.height - reserve if args.height > 0 else math.inf
+    w = max(w, 1.0) if math.isfinite(w) else w
+    h = max(h, 1.0) if math.isfinite(h) else h
     s = min(w / box_w, h / box_h)
     if not math.isfinite(s):
         s = 100.0 / box_w
@@ -728,7 +775,7 @@ def _move(pattern, x, y, limit=100.0):
         pattern.move_abs(lx + (x - lx) * k / n, ly + (y - ly) * k / n)
 
 
-def build_pattern(blocks, rotate_deg=0.0):
+def build_pattern(blocks, rotate_deg=0.0, border=None):
     # Auf den Ursprung zentrieren: sonst blaehen die Anfahrt-Spruenge von (0,0)
     # die Bounding-Box auf.
     pts_all = [p for _, pts in blocks for p in pts]
@@ -746,6 +793,15 @@ def build_pattern(blocks, rotate_deg=0.0):
             (c, [(x * ct - y * st, x * st + y * ct, pen) for x, y, pen in pts])
             for c, pts in blocks
         ]
+
+    # Patch-Rand um die (gedrehte) Bounding-Box; symmetrisch, Motiv bleibt zentriert.
+    if border and border.get("color") and border.get("width", 0) > 0:
+        bxs = [p[0] for _, pts in blocks for p in pts]
+        bys = [p[1] for _, pts in blocks for p in pts]
+        ring = border_points(min(bxs), min(bys), max(bxs), max(bys),
+                             border["width"], border["stitch"], border["row"])
+        if ring:
+            blocks.append((border["color"], ring))
 
     # Gleiche Farbe aufeinanderfolgend zusammenfassen
     merged = []
@@ -823,6 +879,8 @@ class _Handler(BaseHTTPRequestHandler):
             rotate=n("rotate", 0), merge_color=n("merge", MERGE_PCT),
             bg_colors=ignore, bg_color=(qs.get("bgcolor", [""])[0] or None),
             keep_bg=n("keepbg", 0) > 0, outline=n("outline", 0) > 0,
+            border_color=(qs.get("bcolor", [""])[0] or None),
+            border_width=n("bwidth", 3.0),
         )
         suffix = Path(name).suffix.lower() or ".png"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
@@ -839,7 +897,7 @@ class _Handler(BaseHTTPRequestHandler):
             loader = load_svg_blocks if suffix == ".svg" else load_raster_blocks
             report = {}
             blocks = loader(src, args, report)
-            pattern = build_pattern(blocks, args.rotate)
+            pattern = build_pattern(blocks, args.rotate, make_border(args, report))
             if not pattern.stitches:
                 raise ValueError("Keine Stiche erzeugt.")
             pv = io.BytesIO()
@@ -862,7 +920,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "stitches": pattern.count_stitches(),
                 "width_mm": round((max(xs) - min(xs)) / U, 1),
                 "height_mm": round((max(ys) - min(ys)) / U, 1),
-                "blocks": len(blocks),
+                "blocks": pattern.count_threads(),
                 "accuracy": report.get("accuracy"),
                 "colors_used": report.get("colors_used"),
                 "stitch_mm": report.get("stitch_mm"),
@@ -913,6 +971,10 @@ def main(argv=None):
                     help="randverbundenen Hintergrund NICHT entfernen (1:1, alles sticken)")
     ap.add_argument("--outline", action="store_true",
                     help="zusaetzlich Randlinien je Farbe als Laufstich sticken (Konturen/Schrift)")
+    ap.add_argument("--border-color", default=None, metavar="RRGGBB",
+                    help="Patch-Rand um das Motiv (Farbe, z. B. #000000); ohne = kein Rand")
+    ap.add_argument("--border-width", type=float, default=3.0,
+                    help="Patch-Rand: Staerke in mm (Default 3); --width zaehlt inkl. Rand")
     ap.add_argument("--preview", help="zusaetzlich Vorschau-PNG schreiben")
     args = ap.parse_args(argv)
     args.bg_colors = args.ignore_color
@@ -935,7 +997,7 @@ def main(argv=None):
         blocks = loader(src, args, report)
     except MotifError as exc:
         raise SystemExit(str(exc))
-    pattern = build_pattern(blocks, args.rotate)
+    pattern = build_pattern(blocks, args.rotate, make_border(args, report))
     if not pattern.stitches:
         raise SystemExit("Keine Stiche erzeugt.")
 
@@ -951,7 +1013,7 @@ def main(argv=None):
     dens = f", Stich/Reihe {report['stitch_mm']}/{report['row_mm']} mm" if "stitch_mm" in report else ""
     print(
         f"{out}  |  {pattern.count_stitches()} Stiche, "
-        f"{len(blocks)} Farbbloecke ({report.get('colors_used', '?')} Farben){dens}{acc_txt}, "
+        f"{pattern.count_threads()} Farben{dens}{acc_txt}, "
         f"{(max(xs) - min(xs)) / U:.1f} x {(max(ys) - min(ys)) / U:.1f} mm"
     )
 
