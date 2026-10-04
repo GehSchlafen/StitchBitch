@@ -28,7 +28,7 @@ Bild oder SVG -> Stickdatei. Lokales CLI, keine Cloud.
 
 ```bash
 cd ./StitchBitch
-./run.sh --help                 # legt beim 1. Mal venv an + installiert, dann CLI
+./run.sh --help                 
 ./run.sh --serve                # Web-UI auf http://127.0.0.1:8000
 ```
 
