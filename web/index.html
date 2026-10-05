@@ -6,11 +6,19 @@
   :root { color-scheme: dark }
   * { box-sizing: border-box }
   body { margin:0; font:15px/1.5 system-ui,sans-serif; background:#14161a; color:#e8e8e8 }
-  header { padding:14px 20px; border-bottom:1px solid #2a2e35; display:flex; gap:16px; align-items:baseline }
+  header { padding:12px 20px; border-bottom:1px solid #2a2e35; display:flex; gap:12px; align-items:center }
   h1 { margin:0; font-size:19px } header small { color:#8a919c }
-  main { display:grid; grid-template-columns:330px 1fr; min-height:calc(100vh - 55px) }
+  .sp { flex:1 }
+  main { display:grid; grid-template-columns: var(--sw, 330px) 6px 1fr; min-height:calc(100vh - 55px) }
+  main.flip { grid-template-columns: 1fr 6px var(--sw, 330px) }
+  main.flip .right { order:1 } main.flip #split { order:2 } main.flip form { order:3 }
+  main.focus { grid-template-columns: 1fr }
+  main.focus form, main.focus #split { display:none }
+  #split { cursor:col-resize; background:#2a2e35 }
+  #split:hover { background:#3d7dff }
   form { padding:16px; border-right:1px solid #2a2e35; display:flex; flex-direction:column; gap:10px;
          overflow:auto; max-height:calc(100vh - 55px) }
+  .ang { width:56px; padding:2px 4px; font-size:12px }
   label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:#b7bcc4 }
   input,select,button { font:inherit; padding:7px 9px; border-radius:8px; border:1px solid #333a44; background:#1b1f26; color:#eee }
   .row { display:flex; gap:8px } .row label { flex:1 }
@@ -35,10 +43,14 @@
            background:repeating-conic-gradient(#1a1d22 0 25%,#171a1f 0 50%) 0/24px 24px }
   #edit { position:absolute; left:0; top:0; transform-origin:0 0; image-rendering:pixelated }
   #preview { position:absolute; left:0; top:0; transform-origin:0 0; max-width:none; box-shadow:0 8px 40px #0007; display:none }
-  @media (max-width:860px){ main{grid-template-columns:1fr} form{border-right:0;border-bottom:1px solid #2a2e35;max-height:none} }
+  @media (max-width:860px){ main,main.flip{grid-template-columns:1fr !important} #split{display:none}
+    main.focus form{display:none} form,.right{grid-column:1} form{border-right:0;border-bottom:1px solid #2a2e35;max-height:none} }
 </style></head><body>
-<header><h1>StitchBitch</h1><small>Bild / SVG &rarr; Stickdatei</small></header>
-<main>
+<header><h1>StitchBitch</h1><small>Bild / SVG &rarr; Stickdatei</small><span class="sp"></span>
+  <button type="button" id="swap" class="tool" title="Sidebar auf die andere Seite">&#8646;</button>
+  <button type="button" id="focus" class="tool" title="Nur Arbeitsflaeche (Sidebar ausblenden)">&#9974;</button>
+</header>
+<main id="main">
   <form id="form">
     <label>Bild oder SVG<input id="file" type="file" accept="image/*,.svg" required></label>
     <div class="row">
@@ -70,8 +82,10 @@
     <a id="dl">Download Stickdatei</a>
     <div id="status"></div>
     <div class="hint">Editor: 🩹 Radierer (Skalpel), 🖌️ Pinsel (Zielfarbe), 💧 Pipette (Farbe aufnehmen),
-      ✋ verschieben. Mausrad = Zoom.</div>
+      ✋ verschieben. Mausrad = Zoom. Sidebar: am Balken ziehen zum Breiten&auml;ndern,
+      &#8646; Seite tauschen, &#9974; nur Arbeitsfl&auml;che.</div>
   </form>
+  <div id="split" title="Ziehen zum Groessen aendern"></div>
   <div class="right">
     <div class="tabs">
       <button type="button" class="tool active" id="tab-edit">Bearbeiten</button>
@@ -133,7 +147,9 @@ function setView(k){
 }
 function toImg(e){
   const r = canvas.getBoundingClientRect();
-  return { x: (e.clientX - r.left) / view.edit.s, y: (e.clientY - r.top) / view.edit.s };
+  // ueber die Rect-Groesse -> robust gegen jede Skalierung/Zoom des Layouts
+  return { x: (e.clientX - r.left) / r.width * canvas.width,
+           y: (e.clientY - r.top) / r.height * canvas.height };
 }
 function toBlob(){ return new Promise(res => { try { canvas.toBlob(res, 'image/png'); } catch (e) { res(null); } }); }
 
@@ -175,7 +191,11 @@ async function loadPalette(){
       const chip = document.createElement('span'); chip.className = 'chip'; chip.style.background = c.hex;
       const txt = document.createElement('span');
       txt.textContent = c.hex.slice(1) + (c.bg ? ' (BG)' : '') + (c.count ? ' \u00d7' + c.count : '');
-      lab.append(cb, chip, txt);
+      const ang = document.createElement('input');
+      ang.type = 'number'; ang.className = 'ang'; ang.placeholder = '\u00b0'; ang.step = '5';
+      ang.min = '-180'; ang.max = '180'; ang.title = 'Fuellwinkel nur fuer diese Farbe';
+      ang.dataset.hex = c.hex.slice(1);
+      lab.append(cb, chip, txt, ang);
       cb.addEventListener('change', () => lab.classList.toggle('off', !cb.checked));
       box.append(lab);
     });
@@ -292,9 +312,11 @@ $('form').addEventListener('submit', async ev => {
   const off = [...document.querySelectorAll('#palette input:not(:checked)')];
   const ignore = off.filter(c => c.dataset.bg !== '1').map(c => c.dataset.hex).join(',');
   const bgcolor = (off.find(c => c.dataset.bg === '1') || {}).dataset?.hex || '';
+  const angles = [...document.querySelectorAll('#palette .ang')]
+    .filter(a => a.value !== '').map(a => a.dataset.hex + ':' + a.value).join(',');
   const q = new URLSearchParams({
     filename: srcName, format: $('format').value, width: $('width').value, colors: $('colors').value,
-    stitch: $('stitch').value, row: $('row').value, angle: $('angle').value, rotate: $('rotate').value,
+    stitch: $('stitch').value, row: $('row').value, angle: $('angle').value, angles, rotate: $('rotate').value,
     merge: $('merge').value, ignore, bgcolor,
     bcolor: $('borden').checked ? $('bcolor').value : '', bwidth: $('bwidth').value
   });
@@ -320,6 +342,32 @@ $('form').addEventListener('submit', async ev => {
   } catch (e) { $('status').textContent = 'Fehler: ' + e.message; }
   finally { btn.disabled = false; }
 });
+/* ---------- Sidebar: Groesse ziehen, Seite tauschen, Fokus ---------- */
+const mainEl = $('main');
+function refit(){ setTimeout(() => { if (which === 'edit' && editorOK) fitEl('edit'); else fitEl('prev'); }, 0); }
+let splitDrag = false;
+$('split').addEventListener('pointerdown', e => { e.preventDefault(); splitDrag = true; $('split').setPointerCapture(e.pointerId); });
+window.addEventListener('pointermove', e => {
+  if (!splitDrag) return;
+  const flipped = mainEl.classList.contains('flip');
+  let w = flipped ? (window.innerWidth - e.clientX) : e.clientX;
+  w = Math.max(240, Math.min(620, w));
+  document.documentElement.style.setProperty('--sw', w + 'px');
+  localStorage.setItem('sb_sw', w);
+});
+window.addEventListener('pointerup', () => { if (splitDrag) { splitDrag = false; refit(); } });
+$('swap').addEventListener('click', () => {
+  mainEl.classList.toggle('flip');
+  localStorage.setItem('sb_flip', mainEl.classList.contains('flip') ? '1' : '0');
+  refit();
+});
+$('focus').addEventListener('click', () => { mainEl.classList.toggle('focus'); refit(); });
+try {
+  const sw = localStorage.getItem('sb_sw');
+  if (sw) document.documentElement.style.setProperty('--sw', sw + 'px');
+  if (localStorage.getItem('sb_flip') === '1') mainEl.classList.add('flip');
+} catch (e) {}
+
 $('preview').addEventListener('load', () => fitEl('prev'));
 window.addEventListener('resize', () => { if (which === 'edit' && editorOK) fitEl('edit'); });
 </script></body></html>

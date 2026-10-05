@@ -24,6 +24,8 @@ Ponytail-Bauentscheidungen (bewusst, nicht vergessen):
   ueberstochen, wenn die Verbindungsstrecke in DERSELBEN Farbe liegt (unsichtbar);
   quer ueber andere Farben wird gesprungen/geschnitten -> keine sichtbaren Faeden
   ueber dem Motiv. Deutlich weniger Schnitte als zeilenweises Füllen.
+- Fuellwinkel pro Farbe (args.angles: hex->Grad), globaler --angle ist Default;
+  Web schickt angles=rrggbb:deg,rrggbb:deg.
 - Stickdichte ist groessenadaptiv (auto_stitch): ~STITCHES_ACROSS Stiche ueber
   die Breite, damit jede Stickgroesse gleich detailliert ist. --stitch/--row
   ueberschreiben.
@@ -665,9 +667,11 @@ def load_raster_blocks(path, args, report=None):
         report["row_mm"] = round(row_mm, 2)
 
     outline = getattr(args, "outline", False)
+    angles = getattr(args, "angles", None) or {}
     blocks = []
     for _, color, m in layers:
-        pts = layer_stitches(m, mm_per_px, stitch_mm, row_mm, args.angle, outline)
+        ang = angles.get(_norm_hex(hex_of(color)), args.angle)  # Winkel pro Farbe
+        pts = layer_stitches(m, mm_per_px, stitch_mm, row_mm, ang, outline)
         if pts:
             blocks.append((hex_of(color), to_mm(pts, mm_per_px)))
 
@@ -784,9 +788,11 @@ def load_svg_blocks(path, args, report=None):
             [p for polys in strokes.values() for p in polys], w, h, max(2, int(round(0.3 / mm_per_px)))
         )
 
+    angles = getattr(args, "angles", None) or {}
     blocks = []
     for fill, mask in sorted(fills.items(), key=lambda kv: -int(kv[1].sum())):
-        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, args.angle, False)
+        ang = angles.get(_norm_hex(fill), args.angle)
+        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, ang, False)
         if pts:
             blocks.append((fill, to_mm(pts, mm_per_px)))
     # Striche zuletzt (liegen obenauf)
@@ -935,9 +941,17 @@ class _Handler(BaseHTTPRequestHandler):
         opt = lambda k: (float(qs[k][0]) if qs.get(k, [""])[0] not in ("", "auto") else None)
         # Vom Client unmarkierte Palettenfarben = zu ignorieren (Hintergrund).
         ignore = [c for c in qs.get("ignore", [""])[0].split(",") if c.strip()]
+        angles = {}
+        for part in qs.get("angles", [""])[0].split(","):
+            if ":" in part:
+                k, v = part.split(":", 1)
+                try:
+                    angles[_norm_hex(k)] = float(v)
+                except ValueError:
+                    pass
         args = SimpleNamespace(
             width=n("width", 100), height=n("height", 0), colors=int(n("colors", 16)),
-            stitch=opt("stitch"), row=opt("row"), angle=n("angle", 45),
+            stitch=opt("stitch"), row=opt("row"), angle=n("angle", 45), angles=angles,
             rotate=n("rotate", 0), merge_color=n("merge", MERGE_PCT),
             bg_colors=ignore, bg_color=(qs.get("bgcolor", [""])[0] or None),
             keep_bg=n("keepbg", 0) > 0, outline=n("outline", 0) > 0,
@@ -1025,7 +1039,9 @@ def main(argv=None):
                     help="Stichlaenge in mm (Default: automatisch nach Groesse)")
     ap.add_argument("--row", type=float, default=None,
                     help="Reihenabstand der Fuellung in mm (Default: automatisch nach Groesse)")
-    ap.add_argument("--angle", type=float, default=45.0, help="Fuellwinkel in Grad")
+    ap.add_argument("--angle", type=float, default=45.0, help="Fuellwinkel in Grad (Default fuer alle Farben)")
+    ap.add_argument("--angle-color", action="append", metavar="RRGGBB=DEG",
+                    help="Fuellwinkel fuer eine Farbe, z. B. --angle-color e31e24=90 (mehrfach)")
     ap.add_argument("--rotate", type=float, default=0.0, help="gesamtes Motiv um Grad drehen")
     ap.add_argument("--ignore-color", action="append", metavar="RRGGBB",
                     help="Farbe nicht sticken (mehrfach moeglich)")
@@ -1042,6 +1058,14 @@ def main(argv=None):
     args.bg_colors = args.ignore_color
     args.bg_color = None
     args.keep_bg = args.keep_background
+    args.angles = {}
+    for item in args.angle_color or []:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            try:
+                args.angles[_norm_hex(k)] = float(v)
+            except ValueError:
+                pass
 
     if args.serve:
         return serve(args)

@@ -72,7 +72,8 @@ The other person unpacks it, needs Python 3 + internet (first run only), then:
 | `--merge-color` | `5` | merge colors within ±X% (value = average); `0` = off |
 | `--stitch` | auto | stitch length in mm (default `width/120`, 0.5–3.0) |
 | `--row` | auto | fill row spacing in mm (default `stitch/4`, 0.25–0.5) |
-| `--angle` | `45` | fill angle in degrees |
+| `--angle` | `45` | fill angle in degrees (default for all colors) |
+| `--angle-color RRGGBB=DEG` | – | fill angle for one color, e.g. `e31e24=90` (repeatable) |
 | `--rotate` | `0` | rotate the whole design by degrees (width applies before rotation) |
 | `--ignore-color RRGGBB` | – | skip this color entirely, repeatable |
 | `--keep-background` | – | do NOT remove the border-connected background (1:1, stitch everything) |
@@ -114,6 +115,11 @@ preview and download the stitch file.
   by default (only the border-connected area disappears, interior white stays).
   Check it again for 1:1. Unchecking other colors removes them entirely.
   Transparent areas never show up (they are no color).
+- **Per-color angle**: each tile has a small `°` field for that color's own fill
+  angle; empty = the global angle.
+- **Layout**: drag the divider to resize the sidebar, `⇔` moves the sidebar to
+  the other side, `⛶` shows the workspace only. These settings are saved in the
+  browser.
 
 ### Image editor (in the browser, before stitching)
 
