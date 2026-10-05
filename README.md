@@ -83,9 +83,11 @@ The other person unpacks it, needs Python 3 + internet (first run only), then:
 
 ### Connected stitching (few jumps/cuts)
 
-Stitches are ordered so connected areas are sewn as one thread. Gaps covered by
-other motif colors are briefly over-stitched (hidden later); only real background
-gaps are jumped. Instead of ~1500 cuts per logo you now get typically < 100.
+Stitches are ordered so connected areas are sewn as one thread. A gap is only
+over-stitched when the connecting path lies within the **same color** (invisible,
+same thread); any gap that would run across another color is jumped and cut — so
+no thread runs visibly across the design. This also cuts the number of cuts/jumps
+from ~1500 per logo down to a small number.
 
 ### Same accuracy at every size
 

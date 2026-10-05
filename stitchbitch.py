@@ -20,9 +20,10 @@ Ponytail-Bauentscheidungen (bewusst, nicht vergessen):
   schwarze Konturen, kann bei Schrift/Randloechern groesserer Flaechen stoeren).
 - Patch-Rand (silhouette_border): Motivflaechen aufblasen, Original abziehen ->
   Rand entlang der Silhouette; Farbe und Staerke vom User. --width inkl. Rand.
-- Verbindung: Runs werden per Nearest-Neighbor geordnet; Luecken, die von anderen
-  Motivfarben bedeckt sind, werden kurz ueberstochen, sonst gesprungen/geschnitten.
-  -> wenige Spruenge/Trim statt hunderte (Stickdatei bleibt zusammenhaengend).
+- Verbindung: Runs werden per Nearest-Neighbor geordnet. Eine Luecke wird nur
+  ueberstochen, wenn die Verbindungsstrecke in DERSELBEN Farbe liegt (unsichtbar);
+  quer ueber andere Farben wird gesprungen/geschnitten -> keine sichtbaren Faeden
+  ueber dem Motiv. Deutlich weniger Schnitte als zeilenweises Füllen.
 - Stickdichte ist groessenadaptiv (auto_stitch): ~STITCHES_ACROSS Stiche ueber
   die Breite, damit jede Stickgroesse gleich detailliert ist. --stitch/--row
   ueberschreiben.
@@ -373,10 +374,11 @@ def stroke_points(polylines_px, mm_per_px, stitch_mm):
     return out
 
 
-def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, cover, outline=False):
-    """Einen Farbbereich fuellen (Runs naehe-sortiert, ueberdecktes Ueberstechen);
+def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, outline=False):
+    """Einen Farbbereich fuellen (Runs naehe-sortiert, Ueberstechen nur ueber die
+    EIGENE Farbe -> keine sichtbaren Faeden quer ueber andere Farben);
     optional zusaetzlich Randlinien als Laufstich."""
-    pts = fill_mask(mask, mm_per_px, stitch_mm, row_mm, angle, cover=cover)
+    pts = fill_mask(mask, mm_per_px, stitch_mm, row_mm, angle, cover=mask)
     if outline:
         stitch_px = max(stitch_mm / mm_per_px, 1.0)
         for loop in _mask_contours(mask):
@@ -665,7 +667,7 @@ def load_raster_blocks(path, args, report=None):
     outline = getattr(args, "outline", False)
     blocks = []
     for _, color, m in layers:
-        pts = layer_stitches(m, mm_per_px, stitch_mm, row_mm, args.angle, anymask, outline)
+        pts = layer_stitches(m, mm_per_px, stitch_mm, row_mm, args.angle, outline)
         if pts:
             blocks.append((hex_of(color), to_mm(pts, mm_per_px)))
 
@@ -784,7 +786,7 @@ def load_svg_blocks(path, args, report=None):
 
     blocks = []
     for fill, mask in sorted(fills.items(), key=lambda kv: -int(kv[1].sum())):
-        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, args.angle, anymask, False)
+        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, args.angle, False)
         if pts:
             blocks.append((fill, to_mm(pts, mm_per_px)))
     # Striche zuletzt (liegen obenauf)
