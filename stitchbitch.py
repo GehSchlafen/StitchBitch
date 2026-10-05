@@ -315,6 +315,25 @@ def _drop_border_component(mask):
     return mask & ~np.isin(comp, border)
 
 
+def _chaikin(points, iters=2, closed=True):
+    """Ecken abschneiden -> glatte Kontur (saubere Raender statt Pixel-Treppe)."""
+    p = [(float(x), float(y)) for x, y in points]
+    if len(p) < 3:
+        return p
+    for _ in range(max(0, iters)):
+        q = []
+        n = len(p)
+        rng = range(n) if closed else range(n - 1)
+        for i in rng:
+            a, b = p[i], p[(i + 1) % n]
+            q.append((0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1]))
+            q.append((0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1]))
+        if not closed and p:
+            q = [p[0]] + q + [p[-1]]
+        p = q
+    return p
+
+
 def _rdp(points, eps):
     """Douglas-Peucker-Vereinfachung gegen die Pixel-Treppe der Konturen."""
     pts = np.asarray(points, dtype=float)
@@ -384,7 +403,7 @@ def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, outline=False):
     if outline:
         stitch_px = max(stitch_mm / mm_per_px, 1.0)
         for loop in _mask_contours(mask):
-            line = resample(_rdp(loop, 1.5), stitch_px)
+            line = resample(_chaikin(_rdp(loop, 2.0), 2), stitch_px)  # geglaettete Kontur
             if len(line) < 2:
                 continue
             pts.append((line[0][0], line[0][1], 0))
@@ -658,8 +677,13 @@ def load_raster_blocks(path, args, report=None):
     if not layers and border_bg is not None:
         # Rand-Entfernung hat alles geschluckt (z. B. einfarbiges Bild) -> ohne sie.
         layers = build(None)
+    if not layers and entries:
+        # Letzter Ausweg: groesste Farbe sticken, statt abzubrechen.
+        big = max(range(len(entries)), key=lambda i: int((labels == i).sum()))
+        c, col = entries[big]
+        layers = [(c, col, labels == big)]
     if not layers:
-        raise MotifError("Keine Motive gefunden (alle Farben abgewaehlt oder zu wenig Kontrast).")
+        raise MotifError("Bild enthaelt kein stickbares Motiv.")
 
     anymask = np.zeros(opaque.shape, dtype=bool)
     for _, _, m in layers:
@@ -914,6 +938,93 @@ def build_pattern(blocks, rotate_deg=0.0):
 
 # ----------------------------------------------------------------------------- Web-UI
 
+def _shade(rgb, f):
+    """Farbe aufhellen (f>0) oder abdunkeln (f<0)."""
+    if f >= 0:
+        return tuple(int(c + (255 - c) * f) for c in rgb)
+    return tuple(int(c * (1 + f)) for c in rgb)
+
+
+def render_pattern(pattern, stream, px_per_mm=12.0, max_side=1800, fabric=(236, 234, 229),
+                   texture=5, supersample=2):
+    """Realistische Stickvorschau: jeder Stich als Faden mit Glanzkante und Schatten
+    auf Stoff, weich durch Supersampling. Ersetzt das reine Linien-PNG."""
+    st = pattern.stitches
+    if not st:
+        raise MotifError("Nichts zu rendern.")
+    xs = [s[0] for s in st]
+    ys = [s[1] for s in st]
+    minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
+    w_mm, h_mm = (maxx - minx) / U, (maxy - miny) / U
+    scale = px_per_mm
+    if max(w_mm, h_mm, 1e-6) * scale > max_side:
+        scale = max_side / max(w_mm, h_mm)
+    pad = 10
+    W = max(2, int(w_mm * scale) + 2 * pad)
+    H = max(2, int(h_mm * scale) + 2 * pad)
+    n_stitch = sum(1 for s in st if s[2] == pe.STITCH)
+    heavy = n_stitch > 120_000  # sehr grosse Designs: schnell statt schoen
+    ss = 1 if heavy else max(1, int(supersample))
+    Ws, Hs = W * ss, H * ss
+
+    rng = np.random.default_rng(7)
+    base = np.zeros((Hs, Ws, 3), np.uint8)
+    base[:, :] = fabric
+    if texture:
+        noise = rng.integers(-texture, texture + 1, (Hs, Ws, 1))
+        base = np.clip(base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+    img = Image.fromarray(base, "RGB")
+    shadow = Image.new("RGBA", (Ws, Hs), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+
+    tw = max(1.0, 0.42 * scale * ss)      # Fadenbreite in px
+    hw = max(1.0, tw * 0.36)              # Glanzkante
+
+    def P(c):
+        return (pad * ss + (c[0] - minx) / U * scale * ss,
+                pad * ss + (c[1] - miny) / U * scale * ss)
+
+    threads = pattern.threadlist or []
+    idx = 0
+    prev = None
+    ops = []
+    for s in st:
+        cmd, x, y = s[2], s[0], s[1]
+        if cmd == pe.COLOR_CHANGE:
+            idx += 1
+            prev = (x, y)
+            continue
+        if cmd == pe.STITCH and prev is not None:
+            col = threads[min(idx, len(threads) - 1)].color if threads else 0
+            ops.append((P(prev), P((x, y)), ((col >> 16) & 255, (col >> 8) & 255, col & 255)))
+        prev = (x, y)
+
+    # 1) Schatten
+    for a, b, _ in ops:
+        sd.line([(a[0] + tw * 0.45, a[1] + tw * 0.45), (b[0] + tw * 0.45, b[1] + tw * 0.45)],
+                fill=(20, 18, 16, 80), width=int(round(tw * 1.02)))
+    img = Image.alpha_composite(img.convert("RGBA"), shadow).convert("RGB")
+    d = ImageDraw.Draw(img)
+    # 2) Faden + Glanzkante (Licht von oben-links)
+    for a, b, rgb in ops:
+        d.line([a, b], fill=rgb, width=int(round(tw)))
+        if heavy:
+            continue
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy)
+        if L > 0.5:
+            px, py = -dy / L, dx / L
+            if px + py > 0:
+                px, py = -px, -py
+            off = (px * tw * 0.3, py * tw * 0.3)
+            d.line([(a[0] + off[0], a[1] + off[1]), (b[0] + off[0], b[1] + off[1])],
+                   fill=_shade(rgb, 0.55), width=max(1, int(round(hw))))
+    if ss > 1:
+        img = img.resize((W, H), Image.LANCZOS)
+    img.save(stream, "PNG")
+    return img
+
+
 FORMATS = ["dst", "pes", "jef", "exp", "vp3", "pec", "xxx", "u01"]
 
 
@@ -984,7 +1095,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not pattern.stitches:
                 raise ValueError("Keine Stiche erzeugt.")
             pv = io.BytesIO()
-            pe.write_png(pattern, pv)
+            render_pattern(pattern, pv)
             out_tmp = None
             try:
                 with tempfile.NamedTemporaryFile(suffix="." + fmt, delete=False) as g:
@@ -1096,7 +1207,7 @@ def main(argv=None):
 
     pe.write(pattern, str(out))
     if args.preview:
-        pe.write_png(pattern, args.preview)
+        render_pattern(pattern, args.preview)
 
     st = [p for p in pattern.stitches if p[2] == pe.STITCH]
     xs = [p[0] for p in st]
