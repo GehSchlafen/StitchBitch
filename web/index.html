@@ -311,13 +311,15 @@ $('form').addEventListener('submit', async ev => {
   ev.preventDefault();
   const off = [...document.querySelectorAll('#palette input:not(:checked)')];
   const ignore = off.filter(c => c.dataset.bg !== '1').map(c => c.dataset.hex).join(',');
-  const bgcolor = (off.find(c => c.dataset.bg === '1') || {}).dataset?.hex || '';
+  const bgInput = document.querySelector('#palette input[data-bg="1"]');
+  const bgcolor = (bgInput && !bgInput.checked) ? bgInput.dataset.hex : '';
+  const keepbg = (bgInput && bgInput.checked) ? '1' : '0';  // angehakt = Hintergrund behalten
   const angles = [...document.querySelectorAll('#palette .ang')]
     .filter(a => a.value !== '').map(a => a.dataset.hex + ':' + a.value).join(',');
   const q = new URLSearchParams({
     filename: srcName, format: $('format').value, width: $('width').value, colors: $('colors').value,
     stitch: $('stitch').value, row: $('row').value, angle: $('angle').value, angles, rotate: $('rotate').value,
-    merge: $('merge').value, ignore, bgcolor,
+    merge: $('merge').value, ignore, bgcolor, keepbg,
     bcolor: $('borden').checked ? $('bcolor').value : '', bwidth: $('bwidth').value
   });
   const btn = $('go'); btn.disabled = true; $('status').textContent = 'Stricke ...'; $('dl').style.display = 'none';

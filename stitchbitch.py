@@ -641,18 +641,25 @@ def load_raster_blocks(path, args, report=None):
     else:
         border_bg = None
 
-    layers = []
-    for i, (c, col) in enumerate(entries):
-        hx = _norm_hex(hex_of(col))
-        if hx in ignore:
-            continue
-        m = labels == i
-        if border_bg is not None and hx == border_bg:
-            m = _drop_border_component(m)
-        if m.any():
-            layers.append((c, col, m))
+    def build(remove_bg):
+        out = []
+        for i, (c, col) in enumerate(entries):
+            hx = _norm_hex(hex_of(col))
+            if hx in ignore:
+                continue
+            m = labels == i
+            if remove_bg is not None and hx == remove_bg:
+                m = _drop_border_component(m)
+            if m.any():
+                out.append((c, col, m))
+        return out
+
+    layers = build(border_bg)
+    if not layers and border_bg is not None:
+        # Rand-Entfernung hat alles geschluckt (z. B. einfarbiges Bild) -> ohne sie.
+        layers = build(None)
     if not layers:
-        raise MotifError("Keine Motive gefunden (alles Hintergrund?).")
+        raise MotifError("Keine Motive gefunden (alle Farben abgewaehlt oder zu wenig Kontrast).")
 
     anymask = np.zeros(opaque.shape, dtype=bool)
     for _, _, m in layers:
