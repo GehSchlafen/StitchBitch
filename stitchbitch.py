@@ -234,6 +234,28 @@ def _mask_contours(mask):
     return loops
 
 
+def _clean_edges(labels, opaque, edge, iters=3):
+    """Kantpixel uebernehmen die Farbe echter Nachbarn (entfernt AA-Mischkanten,
+    die sonst als duenne Spaete/Sprenkel eigene Layer bilden)."""
+    lab = labels.copy()
+    unknown = edge & opaque & (lab >= 0)
+    for _ in range(iters):
+        if not unknown.any():
+            break
+        changed = False
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nb = np.roll(lab, (dy, dx), (0, 1))
+            nb_unk = np.roll(unknown, (dy, dx), (0, 1))
+            take = unknown & ~nb_unk & (nb >= 0)
+            if take.any():
+                lab[take] = nb[take]
+                unknown = unknown & ~take
+                changed = True
+        if not changed:
+            break
+    return lab
+
+
 def _dilate(mask, radius):
     """Binärmaske um radius Pixel aufblasen (ohne Rand-Umbruch)."""
     m = mask
@@ -241,6 +263,22 @@ def _dilate(mask, radius):
         p = np.pad(m, 1)
         m = p[1:-1, 1:-1] | p[:-2, 1:-1] | p[2:, 1:-1] | p[1:-1, :-2] | p[1:-1, 2:]
     return m
+
+
+def _erode(mask, radius):
+    """Binärmaske um radius Pixel schrumpfen (Gegenstueck zu _dilate)."""
+    return ~_dilate(~mask, radius)
+
+
+def _fill_holes(mask):
+    """Eingeschlossene Loecher fuellen (fuer saubere Aussenkontur ohne Sattel-Oval)."""
+    comp = _components(~mask)
+    border = np.unique(np.concatenate([comp[0], comp[-1], comp[:, 0], comp[:, -1]]))
+    border = border[border > 0]
+    holes = comp > 0
+    if border.size:
+        holes = holes & ~np.isin(comp, border)
+    return mask | holes
 
 
 def _components(mask):
@@ -395,15 +433,79 @@ def stroke_points(polylines_px, mm_per_px, stitch_mm):
     return out
 
 
-def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, outline=False):
+def _despeckle(mask, mm_per_px, row_mm):
+    """Duenne Splitter-Komponenten (AA-Reste) einer Farbe entfernen, sofern die
+    Farbe noch dickere Komponenten hat. Eine Farbe, die nur duenn vorkommt
+    (z. B. eine Linie/Kontur), bleibt erhalten."""
+    comp = _components(mask)
+    n = int(comp.max())
+    if n <= 1 or n > 400:  # zu fragmentiert (z. B. Foto) -> unveraendert
+        return mask
+    thr = max(1.0, 4.0 * row_mm)
+    mws = {}
+    for cid in range(1, n + 1):
+        sel = comp == cid
+        loops = _mask_contours(sel)
+        perim = sum(len(l) for l in loops)
+        area = int(sel.sum())
+        mws[cid] = (2.0 * area / perim * mm_per_px) if perim else 1e9
+    if not any(v >= thr for v in mws.values()):
+        return mask
+    keep = [cid for cid, v in mws.items() if v >= thr]
+    return np.isin(comp, keep) if keep else mask
+
+
+def _signed_area(loop):
+    x = np.asarray([p[0] for p in loop], dtype=float)
+    y = np.asarray([p[1] for p in loop], dtype=float)
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def _outline_loops(mask, mm_per_px, row_mm):
+    """Glatte Konturen nur fuer ausreichend dicke Komponenten. Duenne Ringe/Reste
+    (oder Sattel-Artefakte) haben eine kleine mittlere Breite und werden verworfen."""
+    comp = _components(mask)
+    n = int(comp.max())
+    if n == 0 or n > 400:  # zu fragmentiert -> keine Kontur
+        return []
+    thr = max(1.0, 4.0 * row_mm)
+    out = []
+    for cid in range(1, n + 1):
+        sel = comp == cid
+        area = int(sel.sum())
+        if area == 0:
+            continue
+        filled = _fill_holes(sel)
+        loops = _mask_contours(filled)
+        holes = filled & ~sel
+        if holes.any():
+            loops = loops + _mask_contours(holes)
+        perim = sum(len(l) for l in loops)
+        mw = (2.0 * area / perim * mm_per_px) if perim else 1e9
+        if mw >= thr:
+            out.extend(loops)
+    return out
+
+
+def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, outline=True):
     """Einen Farbbereich fuellen (Runs naehe-sortiert, Ueberstechen nur ueber die
-    EIGENE Farbe -> keine sichtbaren Faeden quer ueber andere Farben);
-    optional zusaetzlich Randlinien als Laufstich."""
-    pts = fill_mask(mask, mm_per_px, stitch_mm, row_mm, angle, cover=mask)
+    EIGENE Farbe) und mit einer geglaetteten Randlinie einfassen, damit Kanten
+    (auch Farbkanten) sauber sind statt gezackt. Fuellung leicht eingerueckt."""
+    mo = _dilate(_erode(mask, 1), 1)  # Opening: duenne Stege/Sporen weg, Kanten runder
+    if int(mo.sum()) >= 0.7 * int(mask.sum()):
+        mask = mo
+    mask = _despeckle(mask, mm_per_px, row_mm)  # AA-Splitter raus
+    er = _erode(mask, 1)
+    fillm = er if int(er.sum()) >= 0.5 * int(mask.sum()) else mask
+    pts = fill_mask(fillm, mm_per_px, stitch_mm, row_mm, angle, cover=fillm)
     if outline:
         stitch_px = max(stitch_mm / mm_per_px, 1.0)
-        for loop in _mask_contours(mask):
-            line = resample(_chaikin(_rdp(loop, 2.0), 2), stitch_px)  # geglaettete Kontur
+        for loop in _outline_loops(mask, mm_per_px, row_mm):
+            if 2.0 * abs(_signed_area(loop)) / max(len(loop), 1) * mm_per_px < 1.0:
+                continue  # zu schmal (Sattel-Artefakt / duenne Linie) -> keine Kontur
+            pts_l = loop[:-1] if len(loop) > 1 and abs(loop[0][0] - loop[-1][0]) < 1e-6 \
+                and abs(loop[0][1] - loop[-1][1]) < 1e-6 else loop
+            line = resample(_chaikin(_rdp(pts_l, 1.2), 3), stitch_px)  # geglaettete Kontur
             if len(line) < 2:
                 continue
             pts.append((line[0][0], line[0][1], 0))
@@ -582,6 +684,7 @@ def _finalize(rgb, opaque, cols):
     for new, old in enumerate(keep):
         lut[old] = new
     labels[opaque] = lut[lab]
+    labels = _clean_edges(labels, opaque, _edge_mask(rgb))  # AA-Mischkanten aufloesen
     entries = [(int(counts[k]), cols[k]) for k in keep]
 
     border = np.zeros(opaque.shape, dtype=bool)
@@ -697,7 +800,7 @@ def load_raster_blocks(path, args, report=None):
         report["stitch_mm"] = round(stitch_mm, 2)
         report["row_mm"] = round(row_mm, 2)
 
-    outline = getattr(args, "outline", False)
+    outline = getattr(args, "outline", True)
     angles = getattr(args, "angles", None) or {}
     blocks = []
     for _, color, m in layers:
@@ -820,10 +923,11 @@ def load_svg_blocks(path, args, report=None):
         )
 
     angles = getattr(args, "angles", None) or {}
+    outline = getattr(args, "outline", True)
     blocks = []
     for fill, mask in sorted(fills.items(), key=lambda kv: -int(kv[1].sum())):
         ang = angles.get(_norm_hex(fill), args.angle)
-        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, ang, False)
+        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, ang, outline)
         if pts:
             blocks.append((fill, to_mm(pts, mm_per_px)))
     # Striche zuletzt (liegen obenauf)
@@ -1072,7 +1176,8 @@ class _Handler(BaseHTTPRequestHandler):
             stitch=opt("stitch"), row=opt("row"), angle=n("angle", 45), angles=angles,
             rotate=n("rotate", 0), merge_color=n("merge", MERGE_PCT),
             bg_colors=ignore, bg_color=(qs.get("bgcolor", [""])[0] or None),
-            keep_bg=n("keepbg", 0) > 0, outline=n("outline", 0) > 0,
+            keep_bg=n("keepbg", 0) > 0,
+            outline=qs.get("outline", ["1"])[0] not in ("0", "false", "off", ""),
             border_color=(qs.get("bcolor", [""])[0] or None),
             border_width=n("bwidth", 3.0),
         )
@@ -1165,8 +1270,8 @@ def main(argv=None):
                     help="Farbe nicht sticken (mehrfach moeglich)")
     ap.add_argument("--keep-background", action="store_true",
                     help="randverbundenen Hintergrund NICHT entfernen (1:1, alles sticken)")
-    ap.add_argument("--outline", action="store_true",
-                    help="zusaetzlich Randlinien je Farbe als Laufstich sticken (Konturen/Schrift)")
+    ap.add_argument("--outline", action=argparse.BooleanOptionalAction, default=True,
+                    help="glatte Randlinie je Region sticken (Default an; --no-outline aus)")
     ap.add_argument("--border-color", default=None, metavar="RRGGBB",
                     help="Patch-Rand um das Motiv (Farbe, z. B. #000000); ohne = kein Rand")
     ap.add_argument("--border-width", type=float, default=3.0,
