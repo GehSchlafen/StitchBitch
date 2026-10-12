@@ -9,7 +9,8 @@
   header { padding:12px 20px; border-bottom:1px solid #2a2e35; display:flex; gap:12px; align-items:center }
   h1 { margin:0; font-size:19px } header small { color:#8a919c }
   .sp { flex:1 }
-  main { display:grid; grid-template-columns: var(--sw, 330px) 6px 1fr; min-height:calc(100vh - 55px) }
+  main { display:grid; grid-template-columns: var(--sw, 330px) 6px 1fr;
+         height:calc(100vh - 55px); overflow:hidden }
   main.flip { grid-template-columns: 1fr 6px var(--sw, 330px) }
   main.flip .right { order:1 } main.flip #split { order:2 } main.flip form { order:3 }
   main.focus { grid-template-columns: 1fr }
@@ -17,7 +18,7 @@
   #split { cursor:col-resize; background:#2a2e35 }
   #split:hover { background:#3d7dff }
   form { padding:16px; border-right:1px solid #2a2e35; display:flex; flex-direction:column; gap:10px;
-         overflow:auto; max-height:calc(100vh - 55px) }
+         overflow:auto; min-height:0 }
   .ang { width:56px; padding:2px 4px; font-size:12px }
   label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:#b7bcc4 }
   input,select,button { font:inherit; padding:7px 9px; border-radius:8px; border:1px solid #333a44; background:#1b1f26; color:#eee }
@@ -34,7 +35,7 @@
         background:#1b1f26; cursor:pointer; font-size:12px; color:#cfd3da }
   .sw.off { opacity:.45 }
   .chip { width:14px; height:14px; border-radius:4px; border:1px solid #0007; display:inline-block }
-  .right { display:flex; flex-direction:column; min-width:0 }
+  .right { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden }
   .tabs { display:flex; gap:6px; padding:8px 12px; border-bottom:1px solid #2a2e35; flex-wrap:wrap; align-items:center }
   .sp { flex:1 }
   .tool { background:#1b1f26; padding:6px 9px }
@@ -43,8 +44,10 @@
            background:repeating-conic-gradient(#1a1d22 0 25%,#171a1f 0 50%) 0/24px 24px }
   #edit { position:absolute; left:0; top:0; transform-origin:0 0; image-rendering:pixelated }
   #preview { position:absolute; left:0; top:0; transform-origin:0 0; max-width:none; box-shadow:0 8px 40px #0007; display:none }
-  @media (max-width:860px){ main,main.flip{grid-template-columns:1fr !important} #split{display:none}
-    main.focus form{display:none} form,.right{grid-column:1} form{border-right:0;border-bottom:1px solid #2a2e35;max-height:none} }
+  @media (max-width:860px){ main,main.flip{grid-template-columns:1fr !important; height:auto; overflow:visible}
+    #split{display:none} main.focus form{display:none} form,.right{grid-column:1}
+    form{border-right:0;border-bottom:1px solid #2a2e35;max-height:none}
+    .right{height:70vh} }
 </style></head><body>
 <header><h1>StitchBitch</h1><small>Bild / SVG &rarr; Stickdatei</small><span class="sp"></span>
   <button type="button" id="swap" class="tool" title="Sidebar auf die andere Seite">&#8646;</button>
@@ -69,7 +72,11 @@
     <label>Motiv drehen <span id="rotval">0&deg;</span>
       <input id="rotate" type="range" min="-180" max="180" step="1" value="0"></label>
     <div class="row">
-      <label class="chk"><input id="outline" type="checkbox" checked> Saubere R&auml;nder (glatte Kontur je Region)</label>
+      <label>Stofffarbe<input id="fabric" type="color" value="#ecebe5"></label>
+      <label class="chk"><input id="ftrans" type="checkbox" checked> Transparent</label>
+    </div>
+    <div class="row">
+      <label class="chk"><input id="outline" type="checkbox"> Zus&auml;tzliche Randlinie je Region</label>
     </div>
     <div class="row">
       <label class="chk"><input id="borden" type="checkbox"> Patch-Rand</label>
@@ -147,6 +154,7 @@ function setView(k){
   $('preview').style.display = (k === 'prev' && $('preview').src) ? 'block' : 'none';
   $('tab-edit').classList.toggle('active', k === 'edit');
   $('tab-prev').classList.toggle('active', k === 'prev');
+  if (k === 'prev' && $('preview').src) setTimeout(() => fitEl('prev'), 0);
 }
 function toImg(e){
   const r = canvas.getBoundingClientRect();
@@ -155,6 +163,12 @@ function toImg(e){
            y: (e.clientY - r.top) / r.height * canvas.height };
 }
 function toBlob(){ return new Promise(res => { try { canvas.toBlob(res, 'image/png'); } catch (e) { res(null); } }); }
+let liveTimer = null;
+function schedule(){  // Live-Vorschau: nach kurzer Pause automatisch neu rechnen
+  if (!$('file').files[0]) return;
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => { if (typeof doConvert === 'function') doConvert(); }, 450);
+}
 
 /* ---------- Datei laden ---------- */
 $('file').addEventListener('change', () => {
@@ -171,6 +185,7 @@ $('file').addEventListener('change', () => {
     serverRot = 0; previewRot = 0; $('rotate').value = 0; applyView('prev');
     $('preview').style.display = 'none'; $('dl').style.display = 'none';
     loadPalette();
+    schedule();  // erste Vorschau automatisch
   };
   im.onerror = () => { editorOK = false; $('status').textContent = 'Hinweis: Vorschau-Editor fuer dieses Format nicht verfuegbar (Original wird gestickt).'; loadPalette(); };
   im.src = URL.createObjectURL(f);
@@ -199,7 +214,9 @@ async function loadPalette(){
       ang.min = '-180'; ang.max = '180'; ang.title = 'Fuellwinkel nur fuer diese Farbe';
       ang.dataset.hex = c.hex.slice(1);
       lab.append(cb, chip, txt, ang);
-      cb.addEventListener('change', () => lab.classList.toggle('off', !cb.checked));
+      cb.addEventListener('change', () => { lab.classList.toggle('off', !cb.checked); schedule(); });
+      ang.addEventListener('input', schedule);
+      ang.addEventListener('change', schedule);
       box.append(lab);
     });
     $('palette-wrap').style.display = 'block';
@@ -223,9 +240,9 @@ $('undo').addEventListener('click', () => { const s = undoStack.pop(); if (s) { 
 $('reset').addEventListener('click', () => {
   if (!baseImage) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(baseImage, 0, 0, canvas.width, canvas.height);
-  undoStack = []; loadPalette();
+  undoStack = []; loadPalette(); schedule();
 });
-function stale(){ $('palhint').textContent = 'Bearbeitet - Palette ggf. aktualisieren.'; }
+function stale(){ $('palhint').textContent = 'Bearbeitet - Palette ggf. aktualisieren.'; schedule(); }
 
 function paintDot(p){
   ctx.globalCompositeOperation = (tool === 'erase') ? 'destination-out' : 'source-over';
@@ -310,11 +327,14 @@ $('rotate').addEventListener('input', () => {
 });
 
 /* ---------- Stricken ---------- */
-$('form').addEventListener('submit', async ev => {
-  ev.preventDefault();
-  const off = [...document.querySelectorAll('#palette input:not(:checked)')];
+let converting = false, pendingConvert = false;
+async function doConvert(showPreview){
+  if (!$('file').files[0]) return;
+  if (converting) { pendingConvert = true; return; }  // letzte Aenderung gewinnt
+  converting = true;
+  const off = [...document.querySelectorAll('#palette input[type=checkbox]:not(:checked)')];
   const ignore = off.filter(c => c.dataset.bg !== '1').map(c => c.dataset.hex).join(',');
-  const bgInput = document.querySelector('#palette input[data-bg="1"]');
+  const bgInput = document.querySelector('#palette input[type=checkbox][data-bg="1"]');
   const bgcolor = (bgInput && !bgInput.checked) ? bgInput.dataset.hex : '';
   const keepbg = (bgInput && bgInput.checked) ? '1' : '0';  // angehakt = Hintergrund behalten
   const angles = [...document.querySelectorAll('#palette .ang')]
@@ -323,9 +343,10 @@ $('form').addEventListener('submit', async ev => {
     filename: srcName, format: $('format').value, width: $('width').value, colors: $('colors').value,
     stitch: $('stitch').value, row: $('row').value, angle: $('angle').value, angles, rotate: $('rotate').value,
     merge: $('merge').value, ignore, bgcolor, keepbg, outline: $('outline').checked ? 1 : 0,
-    bcolor: $('borden').checked ? $('bcolor').value : '', bwidth: $('bwidth').value
+    bcolor: $('borden').checked ? $('bcolor').value : '', bwidth: $('bwidth').value,
+    fabric: $('ftrans').checked ? 'none' : $('fabric').value
   });
-  const btn = $('go'); btn.disabled = true; $('status').textContent = 'Stricke ...'; $('dl').style.display = 'none';
+  $('status').textContent = 'Aktualisiere ...';
   try {
     const body = (editorOK ? await toBlob() : null) || $('file').files[0];
     if (!body) throw new Error('Keine Datei');
@@ -334,18 +355,29 @@ $('form').addEventListener('submit', async ev => {
     if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
     serverRot = parseFloat($('rotate').value) || 0;
     $('preview').src = 'data:image/png;base64,' + j.preview;
-    setView('prev');
+    if (showPreview) setView('prev');  // bei Live-Updates den Tab nicht wegnehmen
     const bin = atob(j.file), arr = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
     const a = $('dl');
-    a.href = URL.createObjectURL(new Blob([arr], { type: 'application/octet-stream' }));
+    if (a.dataset.url) URL.revokeObjectURL(a.dataset.url);  // alten Blob freigeben
+    a.dataset.url = URL.createObjectURL(new Blob([arr], { type: 'application/octet-stream' }));
+    a.href = a.dataset.url;
     a.download = j.filename; a.style.display = 'block';
     const acc = (typeof j.accuracy === 'number') ? ' \u00b7 Treffer ' + (j.accuracy * 100).toFixed(1) + '%' : '';
     const dens = j.stitch_mm ? ' \u00b7 Stich/Reihe ' + j.stitch_mm + '/' + j.row_mm + ' mm' : '';
     $('status').textContent = j.stitches + ' Stiche \u00b7 ' + j.width_mm + '\u00d7' + j.height_mm + ' mm \u00b7 '
       + j.blocks + ' Farben' + dens + acc;
   } catch (e) { $('status').textContent = 'Fehler: ' + e.message; }
-  finally { btn.disabled = false; }
+  finally {
+    converting = false;
+    if (pendingConvert) { pendingConvert = false; schedule(); }
+  }
+}
+$('form').addEventListener('submit', ev => { ev.preventDefault(); doConvert(true); });
+// Live: jede Aenderung an Reglern/Feldern loest nach kurzer Pause eine Neuberechnung aus.
+document.querySelectorAll('#form input, #form select').forEach(el => {
+  el.addEventListener('input', schedule);
+  el.addEventListener('change', schedule);
 });
 /* ---------- Sidebar: Groesse ziehen, Seite tauschen, Fokus ---------- */
 const mainEl = $('main');
@@ -374,5 +406,8 @@ try {
 } catch (e) {}
 
 $('preview').addEventListener('load', () => fitEl('prev'));
-window.addEventListener('resize', () => { if (which === 'edit' && editorOK) fitEl('edit'); });
+window.addEventListener('resize', () => {
+  if (which === 'edit' && editorOK) fitEl('edit');
+  else if (which === 'prev' && $('preview').src) fitEl('prev');
+});
 </script></body></html>

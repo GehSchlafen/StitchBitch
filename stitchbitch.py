@@ -234,28 +234,6 @@ def _mask_contours(mask):
     return loops
 
 
-def _clean_edges(labels, opaque, edge, iters=3):
-    """Kantpixel uebernehmen die Farbe echter Nachbarn (entfernt AA-Mischkanten,
-    die sonst als duenne Spaete/Sprenkel eigene Layer bilden)."""
-    lab = labels.copy()
-    unknown = edge & opaque & (lab >= 0)
-    for _ in range(iters):
-        if not unknown.any():
-            break
-        changed = False
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nb = np.roll(lab, (dy, dx), (0, 1))
-            nb_unk = np.roll(unknown, (dy, dx), (0, 1))
-            take = unknown & ~nb_unk & (nb >= 0)
-            if take.any():
-                lab[take] = nb[take]
-                unknown = unknown & ~take
-                changed = True
-        if not changed:
-            break
-    return lab
-
-
 def _dilate(mask, radius):
     """Binärmaske um radius Pixel aufblasen (ohne Rand-Umbruch)."""
     m = mask
@@ -433,26 +411,18 @@ def stroke_points(polylines_px, mm_per_px, stitch_mm):
     return out
 
 
-def _despeckle(mask, mm_per_px, row_mm):
-    """Duenne Splitter-Komponenten (AA-Reste) einer Farbe entfernen, sofern die
-    Farbe noch dickere Komponenten hat. Eine Farbe, die nur duenn vorkommt
-    (z. B. eine Linie/Kontur), bleibt erhalten."""
+def _despeckle(mask, min_area):
+    """Nur winzige Splitter entfernen (AA-Sprenkel). Duenne, aber laengliche
+    Strukturen (Konturen/Linien) haben grosse Flaeche und bleiben erhalten."""
     comp = _components(mask)
     n = int(comp.max())
-    if n <= 1 or n > 400:  # zu fragmentiert (z. B. Foto) -> unveraendert
+    if n <= 1 or n > 2000:
         return mask
-    thr = max(1.0, 4.0 * row_mm)
-    mws = {}
-    for cid in range(1, n + 1):
-        sel = comp == cid
-        loops = _mask_contours(sel)
-        perim = sum(len(l) for l in loops)
-        area = int(sel.sum())
-        mws[cid] = (2.0 * area / perim * mm_per_px) if perim else 1e9
-    if not any(v >= thr for v in mws.values()):
-        return mask
-    keep = [cid for cid, v in mws.items() if v >= thr]
-    return np.isin(comp, keep) if keep else mask
+    counts = np.bincount(comp.reshape(-1), minlength=n + 1)
+    keep = [cid for cid in range(1, n + 1) if counts[cid] >= min_area]
+    if not keep:
+        return mask  # nichts behalten -> lieber Original als alles loeschen
+    return np.isin(comp, keep)
 
 
 def _signed_area(loop):
@@ -491,12 +461,8 @@ def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, outline=True):
     """Einen Farbbereich fuellen (Runs naehe-sortiert, Ueberstechen nur ueber die
     EIGENE Farbe) und mit einer geglaetteten Randlinie einfassen, damit Kanten
     (auch Farbkanten) sauber sind statt gezackt. Fuellung leicht eingerueckt."""
-    mo = _dilate(_erode(mask, 1), 1)  # Opening: duenne Stege/Sporen weg, Kanten runder
-    if int(mo.sum()) >= 0.7 * int(mask.sum()):
-        mask = mo
-    mask = _despeckle(mask, mm_per_px, row_mm)  # AA-Splitter raus
-    er = _erode(mask, 1)
-    fillm = er if int(er.sum()) >= 0.5 * int(mask.sum()) else mask
+    mask = _despeckle(mask, max(10, int(0.00005 * mask.size)))  # nur winzigste Sprenkel
+    fillm = _dilate(mask, 1)  # leicht wachsen -> Farbkanten ueberlappen sauber
     pts = fill_mask(fillm, mm_per_px, stitch_mm, row_mm, angle, cover=fillm)
     if outline:
         stitch_px = max(stitch_mm / mm_per_px, 1.0)
@@ -526,8 +492,10 @@ def silhouette_border(mask, mm_per_px, width_mm, stitch_mm, row_mm, angle):
     radius = int(round(max(0.0, width_mm) / mm_per_px))
     if radius <= 0 or not mask.any():
         return []
-    ring = _dilate(mask, radius) & ~mask
-    return fill_mask(ring, mm_per_px, stitch_mm, row_mm, angle)
+    m = np.pad(mask, radius, constant_values=False)  # gegen Abschneiden am Bildrand
+    ring = _dilate(m, radius) & ~m
+    pts = fill_mask(ring, mm_per_px, stitch_mm, row_mm, angle)
+    return [(x - radius, y - radius, pen) for x, y, pen in pts]
 
 
 def to_mm(points, mm_per_px):
@@ -684,7 +652,6 @@ def _finalize(rgb, opaque, cols):
     for new, old in enumerate(keep):
         lut[old] = new
     labels[opaque] = lut[lab]
-    labels = _clean_edges(labels, opaque, _edge_mask(rgb))  # AA-Mischkanten aufloesen
     entries = [(int(counts[k]), cols[k]) for k in keep]
 
     border = np.zeros(opaque.shape, dtype=bool)
@@ -1042,6 +1009,22 @@ def build_pattern(blocks, rotate_deg=0.0):
 
 # ----------------------------------------------------------------------------- Web-UI
 
+def parse_fabric(s):
+    """Stofffarbe: '#RRGGBB' oder 'none'/'transparent' (None). Ohne Angabe transparent."""
+    if s is None:
+        return None
+    t = str(s).strip().lower()
+    if t in ("", "none", "transparent", "alpha", "-"):
+        return None
+    h = t.lstrip("#")
+    if len(h) == 6:
+        try:
+            return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            pass
+    return (236, 234, 229)
+
+
 def _shade(rgb, f):
     """Farbe aufhellen (f>0) oder abdunkeln (f<0)."""
     if f >= 0:
@@ -1071,15 +1054,16 @@ def render_pattern(pattern, stream, px_per_mm=12.0, max_side=1800, fabric=(236, 
     ss = 1 if heavy else max(1, int(supersample))
     Ws, Hs = W * ss, H * ss
 
-    rng = np.random.default_rng(7)
-    base = np.zeros((Hs, Ws, 3), np.uint8)
-    base[:, :] = fabric
-    if texture:
-        noise = rng.integers(-texture, texture + 1, (Hs, Ws, 1))
-        base = np.clip(base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-    img = Image.fromarray(base, "RGB")
-    shadow = Image.new("RGBA", (Ws, Hs), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
+    if fabric is None:  # transparente Kulisse (nur Faeden)
+        img = Image.new("RGBA", (Ws, Hs), (0, 0, 0, 0))
+    else:
+        rng = np.random.default_rng(7)
+        base = np.zeros((Hs, Ws, 3), np.uint8)
+        base[:, :] = fabric
+        if texture:
+            noise = rng.integers(-texture, texture + 1, (Hs, Ws, 1))
+            base = np.clip(base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        img = Image.fromarray(base, "RGB")
 
     tw = max(1.0, 0.42 * scale * ss)      # Fadenbreite in px
     hw = max(1.0, tw * 0.36)              # Glanzkante
@@ -1103,13 +1087,8 @@ def render_pattern(pattern, stream, px_per_mm=12.0, max_side=1800, fabric=(236, 
             ops.append((P(prev), P((x, y)), ((col >> 16) & 255, (col >> 8) & 255, col & 255)))
         prev = (x, y)
 
-    # 1) Schatten
-    for a, b, _ in ops:
-        sd.line([(a[0] + tw * 0.45, a[1] + tw * 0.45), (b[0] + tw * 0.45, b[1] + tw * 0.45)],
-                fill=(20, 18, 16, 80), width=int(round(tw * 1.02)))
-    img = Image.alpha_composite(img.convert("RGBA"), shadow).convert("RGB")
+    # Faden + Glanzkante (Licht von oben-links); kein Schatten -> keine grauen Halos
     d = ImageDraw.Draw(img)
-    # 2) Faden + Glanzkante (Licht von oben-links)
     for a, b, rgb in ops:
         d.line([a, b], fill=rgb, width=int(round(tw)))
         if heavy:
@@ -1136,6 +1115,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _send(self, code, ctype, body):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1177,7 +1157,7 @@ class _Handler(BaseHTTPRequestHandler):
             rotate=n("rotate", 0), merge_color=n("merge", MERGE_PCT),
             bg_colors=ignore, bg_color=(qs.get("bgcolor", [""])[0] or None),
             keep_bg=n("keepbg", 0) > 0,
-            outline=qs.get("outline", ["1"])[0] not in ("0", "false", "off", ""),
+            outline=qs.get("outline", ["0"])[0] not in ("0", "false", "off", ""),
             border_color=(qs.get("bcolor", [""])[0] or None),
             border_width=n("bwidth", 3.0),
         )
@@ -1200,7 +1180,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not pattern.stitches:
                 raise ValueError("Keine Stiche erzeugt.")
             pv = io.BytesIO()
-            render_pattern(pattern, pv)
+            render_pattern(pattern, pv, fabric=parse_fabric(qs.get("fabric", [None])[0]))
             out_tmp = None
             try:
                 with tempfile.NamedTemporaryFile(suffix="." + fmt, delete=False) as g:
@@ -1270,12 +1250,14 @@ def main(argv=None):
                     help="Farbe nicht sticken (mehrfach moeglich)")
     ap.add_argument("--keep-background", action="store_true",
                     help="randverbundenen Hintergrund NICHT entfernen (1:1, alles sticken)")
-    ap.add_argument("--outline", action=argparse.BooleanOptionalAction, default=True,
-                    help="glatte Randlinie je Region sticken (Default an; --no-outline aus)")
+    ap.add_argument("--outline", action=argparse.BooleanOptionalAction, default=False,
+                    help="zusaetzlich glatte Randlinie je Region sticken (optional)")
     ap.add_argument("--border-color", default=None, metavar="RRGGBB",
                     help="Patch-Rand um das Motiv (Farbe, z. B. #000000); ohne = kein Rand")
     ap.add_argument("--border-width", type=float, default=3.0,
                     help="Patch-Rand: Staerke in mm (Default 3); --width zaehlt inkl. Rand")
+    ap.add_argument("--fabric", default="#ecebe5",
+                    help="Stofffarbe der Vorschau #RRGGBB oder 'none' (transparent)")
     ap.add_argument("--preview", help="zusaetzlich Vorschau-PNG schreiben")
     args = ap.parse_args(argv)
     args.bg_colors = args.ignore_color
@@ -1312,7 +1294,7 @@ def main(argv=None):
 
     pe.write(pattern, str(out))
     if args.preview:
-        render_pattern(pattern, args.preview)
+        render_pattern(pattern, args.preview, fabric=parse_fabric(args.fabric))
 
     st = [p for p in pattern.stitches if p[2] == pe.STITCH]
     xs = [p[0] for p in st]

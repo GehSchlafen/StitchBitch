@@ -77,23 +77,25 @@ The other person unpacks it, needs Python 3 + internet (first run only), then:
 | `--rotate` | `0` | rotate the whole design by degrees (width applies before rotation) |
 | `--ignore-color RRGGBB` | – | skip this color entirely, repeatable |
 | `--keep-background` | – | do NOT remove the border-connected background (1:1, stitch everything) |
-| `--outline` | – | clean edges: stitch a smoothed outline along each region edge |
+| `--outline` | off | optional: also stitch a smoothed outline along each region edge |
 | `--border-color RRGGBB` | – | patch border along the motif silhouette in this color |
 | `--border-width` | `3` | border thickness in mm; `--width` includes the border |
+| `--fabric RRGGBB` | `#ecebe5` | preview fabric color, or `none` for a transparent background |
 | `--preview` | – | also write a preview PNG |
 
 ### Realistic preview
 
 The preview is not a plain line drawing: every stitch is rendered as a thread
-with a sheen/highlight and a soft drop shadow on a subtle fabric background,
-supersampled for smooth edges — so it looks close to the real embroidery.
-(`--preview out.png`, and the web preview.)
+with a sheen/highlight, supersampled for smooth edges, on a background you
+control — a fabric color (`--fabric '#RRGGBB'`) or fully transparent
+(`--fabric none`). (`--preview out.png`, and the web preview.)
 
-### Clean edges ("over-stitch the border")
+### Clean edges
 
-With `--outline` (web: **Clean edges** checkbox) a smoothed outline is stitched
-along each color region (contours are Chaikin-smoothed, so no pixel staircase).
-Use it when edges look ragged and you want a crisp, stitched border.
+Color edges are kept clean by slightly overlapping the fills: each color is
+grown a hair so neighbors meet crisply, and no color is dropped. For an explicit
+stitched border around every region use the optional `--outline` (contours are
+Chaikin-smoothed, so no pixel staircase).
 
 ### Connected stitching (few jumps/cuts)
 
@@ -130,11 +132,16 @@ preview and download the stitch file.
   Transparent areas never show up (they are no color).
 - **Per-color angle**: each tile has a small `°` field for that color's own fill
   angle; empty = the global angle.
-- **Clean edges**: checkbox that stitches a smoothed outline along the region
-  edges (crisper borders).
+- **Fabric color / transparent**: pick the preview backdrop, or check
+  *Transparent* for a see-through PNG (on by default).
+- **Live preview**: any change (width, colors, angles, rotate, border, fabric,
+  palette, editor strokes, …) re-renders the preview automatically after a short
+  pause — no need to press Stitch. *Stitch* forces an update and gives the
+  download.
+- **Extra outline per region**: optional checkbox for a stitched edge per region.
 - **Layout**: drag the divider to resize the sidebar, `⇔` moves the sidebar to
-  the other side, `⛶` shows the workspace only. These settings are saved in the
-  browser.
+  the other side, `⛶` shows the workspace only; the preview always fits the
+  window. These settings are saved in the browser.
 
 ### Image editor (in the browser, before stitching)
 
