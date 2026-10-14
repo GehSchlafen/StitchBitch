@@ -34,6 +34,7 @@
   .sw { flex-direction:row; align-items:center; gap:5px; padding:3px 7px; border:1px solid #333a44; border-radius:8px;
         background:#1b1f26; cursor:pointer; font-size:12px; color:#cfd3da }
   .sw.off { opacity:.45 }
+  .sw.excl { opacity:.45; text-decoration:line-through }
   .chip { width:14px; height:14px; border-radius:4px; border:1px solid #0007; display:inline-block }
   .right { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden }
   .tabs { display:flex; gap:6px; padding:8px 12px; border-bottom:1px solid #2a2e35; flex-wrap:wrap; align-items:center }
@@ -76,6 +77,7 @@
       <label class="chk"><input id="ftrans" type="checkbox" checked> Transparent</label>
     </div>
     <div class="row">
+      <label class="chk"><input id="fillgaps" type="checkbox" checked> L&uuml;cken f&uuml;llen</label>
       <label class="chk"><input id="outline" type="checkbox"> Zus&auml;tzliche Randlinie je Region</label>
     </div>
     <div class="row">
@@ -84,9 +86,10 @@
       <label>Randfarbe<input id="bcolor" type="color" value="#000000"></label>
     </div>
     <div id="palette-wrap" style="display:none">
-      <div class="hint" id="palhint">Palette - abwaehlen = nicht sticken. (BG) = Hintergrund.</div>
+      <div class="hint" id="palhint">Palette: Haekchen = sticken, abwaehlen = ausschliessen (Haekchen wieder rein = dabei). &#128683; = im Bild anklicken. (BG) = Hintergrund.</div>
       <div id="palette" class="palette"></div>
       <button type="button" id="repal" class="tool">Palette aktualisieren</button>
+      <button type="button" id="reexcl" class="tool">Ausschl&uuml;sse l&ouml;schen</button>
     </div>
     <button id="go" type="submit" class="primary">Stricken</button>
     <a id="dl">Download Stickdatei</a>
@@ -105,6 +108,7 @@
       <button type="button" class="tool" data-tool="erase" title="Radierer / Skalpel">&#129657;</button>
       <button type="button" class="tool" data-tool="paint" title="Pinsel (Zielfarbe)">&#128396;</button>
       <button type="button" class="tool" data-tool="pick" title="Pipette">&#128167;</button>
+      <button type="button" class="tool" data-tool="exclude" title="Farbe ausschliessen (ins Bild klicken)">&#128683;</button>
       <input id="tcolor" type="color" value="#ff0000" title="Zielfarbe" style="width:40px;padding:2px">
       <button type="button" class="tool" id="replace" title="Pipettenfarbe durch Zielfarbe ersetzen">Farbe ersetzen</button>
       <label style="flex-direction:row;align-items:center;gap:6px;color:#b7bcc4">Gr&ouml;&szlig;e
@@ -131,6 +135,7 @@ const view = { edit: { s: 1, x: 0, y: 0 }, prev: { s: 1, x: 0, y: 0 } };
 let which = 'edit', tool = 'hand', brush = 30, target = '#ff0000', pickColor = null;
 let baseImage = null, srcName = 'upload.png', editorOK = false;
 let undoStack = [], serverRot = 0, previewRot = 0;
+let excluded = new Set();  // Farben, die komplett ausgeschlossen werden (auch innen)
 
 function hexRgb(h){ const n = parseInt(h.replace('#',''),16); return {r:(n>>16)&255, g:(n>>8)&255, b:n&255}; }
 function fitEl(k){
@@ -200,7 +205,7 @@ async function loadPalette(){
                             { method: 'POST', body: b });
     const j = await res.json();
     if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
-    const box = $('palette'); box.innerHTML = '';
+    const box = $('palette'); box.innerHTML = ''; excluded.clear();
     (j.colors || []).forEach(c => {
       const lab = document.createElement('label');
       lab.className = 'sw' + (c.bg ? ' off' : '');
@@ -220,10 +225,11 @@ async function loadPalette(){
       box.append(lab);
     });
     $('palette-wrap').style.display = 'block';
-    $('palhint').textContent = 'Palette - abwaehlen = nicht sticken. (BG) = Hintergrund.';
+    $('palhint').textContent = 'Palette: Haekchen = sticken, abwaehlen = ausschliessen (Haekchen wieder rein = dabei). \u{1F6AB} = im Bild anklicken. (BG) = Hintergrund.';
   } catch (e) { $('palhint').textContent = 'Palette-Fehler: ' + e.message; $('palette-wrap').style.display = 'block'; }
 }
 $('repal').addEventListener('click', loadPalette);
+$('reexcl').addEventListener('click', () => { excluded.clear(); markExcluded(); schedule(); });
 $('colors').addEventListener('change', loadPalette);
 
 /* ---------- Werkzeuge ---------- */
@@ -231,6 +237,8 @@ document.querySelectorAll('[data-tool]').forEach(b => b.addEventListener('click'
   tool = b.dataset.tool;
   document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('active', x === b));
   stage.style.cursor = tool === 'hand' ? 'grab' : 'crosshair';
+  if (editorOK && which !== 'edit') { setView('edit'); setTimeout(() => fitEl('edit'), 0); }
+  if (tool === 'exclude') $('status').textContent = 'Farbe ausschliessen: ins Bild klicken.';
 }));
 $('tcolor').addEventListener('input', () => { target = $('tcolor').value; });
 $('brush').addEventListener('input', () => { brush = +$('brush').value; });
@@ -243,6 +251,12 @@ $('reset').addEventListener('click', () => {
   undoStack = []; loadPalette(); schedule();
 });
 function stale(){ $('palhint').textContent = 'Bearbeitet - Palette ggf. aktualisieren.'; schedule(); }
+function markExcluded(){
+  document.querySelectorAll('#palette .sw').forEach(lab => {
+    const cb = lab.querySelector('input[type=checkbox]');
+    lab.classList.toggle('excl', !!(cb && excluded.has(cb.dataset.hex)));
+  });
+}
 
 function paintDot(p){
   ctx.globalCompositeOperation = (tool === 'erase') ? 'destination-out' : 'source-over';
@@ -259,7 +273,55 @@ function paintSeg(a, b){
 }
 
 let panning = null, drawing = false, last = null;
+function nearestPaletteCb(d){
+  let best = null, bestd = 1e9;
+  document.querySelectorAll('#palette input[type=checkbox]').forEach(cb => {
+    const h = cb.dataset.hex;
+    const dr = parseInt(h.slice(0, 2), 16) - d[0];
+    const dg = parseInt(h.slice(2, 4), 16) - d[1];
+    const db = parseInt(h.slice(4, 6), 16) - d[2];
+    const dd = dr * dr + dg * dg + db * db;
+    if (dd < bestd) { bestd = dd; best = cb; }
+  });
+  return (best && bestd <= 75 * 75) ? best : null;
+}
+function toggleExclude(d){
+  const cb = nearestPaletteCb(d);
+  if (!cb) { $('status').textContent = 'Keine passende Palette-Farbe gefunden.'; return; }
+  const hex = cb.dataset.hex;
+  if (excluded.has(hex)) { excluded.delete(hex); $('status').textContent = 'Farbe #' + hex + ' wieder dabei.'; }
+  else { excluded.add(hex); $('status').textContent = 'Farbe #' + hex + ' komplett ausgeschlossen.'; }
+  markExcluded(); schedule();
+}
+function samplePreview(e){
+  const img = $('preview'); if (!img.src) return null;
+  const r = img.getBoundingClientRect(); const nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+  const x = Math.floor((e.clientX - r.left) / r.width * nw), y = Math.floor((e.clientY - r.top) / r.height * nh);
+  if (x < 0 || y < 0 || x >= nw || y >= nh) return null;
+  const c = document.createElement('canvas'); c.width = nw; c.height = nh;
+  const cx = c.getContext('2d'); cx.drawImage(img, 0, 0);
+  // kleines Feld mitteln -> robust gegen Glanz/Sheen-Linien
+  const x0 = Math.max(0, x - 2), y0 = Math.max(0, y - 2);
+  const w = Math.max(1, Math.min(5, nw - x0)), h = Math.max(1, Math.min(5, nh - y0));
+  const dd = cx.getImageData(x0, y0, w, h).data;
+  let rr = 0, gg = 0, bb = 0, n = 0;
+  for (let i = 0; i < dd.length; i += 4) { if (dd[i + 3] > 128) { rr += dd[i]; gg += dd[i + 1]; bb += dd[i + 2]; n++; } }
+  if (!n) return null;
+  return new Uint8ClampedArray([rr / n, gg / n, bb / n, 255]);
+}
 stage.addEventListener('pointerdown', e => {
+  if (tool === 'exclude') {  // Farbe in Bild ODER Vorschau anklicken -> komplett ausschliessen
+    let d = null;
+    if (which === 'edit' && editorOK) {
+      const p = toImg(e);
+      if (p.x >= 0 && p.y >= 0 && p.x < canvas.width && p.y < canvas.height)
+        d = ctx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
+    } else {
+      d = samplePreview(e);
+    }
+    if (d) { if (d[3] === 0) $('status').textContent = 'Hier ist nichts (transparent).'; else toggleExclude(d); }
+    return;
+  }
   if (!editorOK || which !== 'edit') return;
   stage.setPointerCapture(e.pointerId);
   const p = toImg(e);
@@ -333,7 +395,11 @@ async function doConvert(showPreview){
   if (converting) { pendingConvert = true; return; }  // letzte Aenderung gewinnt
   converting = true;
   const off = [...document.querySelectorAll('#palette input[type=checkbox]:not(:checked)')];
-  const ignore = off.filter(c => c.dataset.bg !== '1').map(c => c.dataset.hex).join(',');
+  const ignoreSet = new Set([
+    ...off.filter(c => c.dataset.bg !== '1').map(c => c.dataset.hex),
+    ...excluded
+  ]);
+  const ignore = [...ignoreSet].join(',');
   const bgInput = document.querySelector('#palette input[type=checkbox][data-bg="1"]');
   const bgcolor = (bgInput && !bgInput.checked) ? bgInput.dataset.hex : '';
   const keepbg = (bgInput && bgInput.checked) ? '1' : '0';  // angehakt = Hintergrund behalten
@@ -342,7 +408,8 @@ async function doConvert(showPreview){
   const q = new URLSearchParams({
     filename: srcName, format: $('format').value, width: $('width').value, colors: $('colors').value,
     stitch: $('stitch').value, row: $('row').value, angle: $('angle').value, angles, rotate: $('rotate').value,
-    merge: $('merge').value, ignore, bgcolor, keepbg, outline: $('outline').checked ? 1 : 0,
+    merge: $('merge').value, ignore, bgcolor, keepbg,
+    outline: $('outline').checked ? 1 : 0, fillgaps: $('fillgaps').checked ? 1 : 0,
     bcolor: $('borden').checked ? $('bcolor').value : '', bwidth: $('bwidth').value,
     fabric: $('ftrans').checked ? 'none' : $('fabric').value
   });

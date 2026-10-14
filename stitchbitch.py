@@ -259,6 +259,25 @@ def _fill_holes(mask):
     return mask | holes
 
 
+def _close(mask, radius):
+    """Morphologisches Schliessen: kleine Luecken/Fitzen zustopfen (Form bleibt)."""
+    return _erode(_dilate(mask, radius), radius)
+
+
+def _fill_small_holes(mask, max_area):
+    """Eingeschlossene Loecher bis max_area px fuellen (Pinholes/Gaps zusticken)."""
+    comp = _components(~mask)
+    n = int(comp.max())
+    if n == 0:
+        return mask
+    counts = np.bincount(comp.reshape(-1), minlength=n + 1)
+    border = {int(b) for b in np.concatenate([comp[0], comp[-1], comp[:, 0], comp[:, -1]]) if b > 0}
+    ids = [cid for cid in range(1, n + 1) if cid not in border and counts[cid] <= max_area]
+    if not ids:
+        return mask
+    return mask | np.isin(comp, ids)
+
+
 def _components(mask):
     """Zusammenhaengende Komponenten einer bool-Maske (run-basiertes Union-Find).
     -> int-Labelbild, 0 = leer, 1..n = Komponenten."""
@@ -457,12 +476,16 @@ def _outline_loops(mask, mm_per_px, row_mm):
     return out
 
 
-def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, outline=True):
+def layer_stitches(mask, mm_per_px, stitch_mm, row_mm, angle, outline=True, fill_gaps=False):
     """Einen Farbbereich fuellen (Runs naehe-sortiert, Ueberstechen nur ueber die
     EIGENE Farbe) und mit einer geglaetteten Randlinie einfassen, damit Kanten
     (auch Farbkanten) sauber sind statt gezackt. Fuellung leicht eingerueckt."""
     mask = _despeckle(mask, max(10, int(0.00005 * mask.size)))  # nur winzigste Sprenkel
-    fillm = _dilate(mask, 1)  # leicht wachsen -> Farbkanten ueberlappen sauber
+    if fill_gaps:
+        mask = _close(mask, 1)  # kleine Einbuchtungen schliessen
+        hole_area = int(max(4, 3.1416 * ((1.3 / mm_per_px) / 2) ** 2))
+        mask = _fill_small_holes(mask, hole_area)  # kleine Loecher zusticken
+    fillm = _dilate(mask, 2 if fill_gaps else 1)  # wachsen -> Kanten ueberlappen
     pts = fill_mask(fillm, mm_per_px, stitch_mm, row_mm, angle, cover=fillm)
     if outline:
         stitch_px = max(stitch_mm / mm_per_px, 1.0)
@@ -715,12 +738,29 @@ def _norm_hex(h):
     return str(h).lower().lstrip("#")
 
 
+def _hex_rgb(h):
+    h = _norm_hex(h)
+    return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4)) if len(h) == 6 else (0, 0, 0)
+
+
+def _in_ignore(hx, ignore, ignore_rgb, tol=45):
+    """Farbe ausgeschlossen? Exakt oder innerhalb Toleranz (fuer aehnliche Toene)."""
+    if hx in ignore:
+        return True
+    r, g, b = _hex_rgb(hx)
+    for ir, ig, ib in ignore_rgb:
+        if (r - ir) ** 2 + (g - ig) ** 2 + (b - ib) ** 2 <= tol * tol:
+            return True
+    return False
+
+
 def load_raster_blocks(path, args, report=None):
     rgb, opaque, labels, entries, auto_bg, acc, used = _raster_analysis(path, args)
     if report is not None:
         report["accuracy"] = acc
         report["colors_used"] = len(entries)
     ignore = _ignore_set(args, auto_bg)  # komplett zu entfernende Farben
+    ignore_rgb = [_hex_rgb(h) for h in ignore]
     # Randverbundener Hintergrund: nur die aussen liegende Flaeche dieser Farbe
     # faellt weg, innenliegende (z. B. weisse Schrift) bleiben.
     if getattr(args, "bg_color", None):
@@ -734,7 +774,7 @@ def load_raster_blocks(path, args, report=None):
         out = []
         for i, (c, col) in enumerate(entries):
             hx = _norm_hex(hex_of(col))
-            if hx in ignore:
+            if _in_ignore(hx, ignore, ignore_rgb):
                 continue
             m = labels == i
             if remove_bg is not None and hx == remove_bg:
@@ -768,11 +808,12 @@ def load_raster_blocks(path, args, report=None):
         report["row_mm"] = round(row_mm, 2)
 
     outline = getattr(args, "outline", True)
+    fill_gaps = getattr(args, "fill_gaps", False)
     angles = getattr(args, "angles", None) or {}
     blocks = []
     for _, color, m in layers:
         ang = angles.get(_norm_hex(hex_of(color)), args.angle)  # Winkel pro Farbe
-        pts = layer_stitches(m, mm_per_px, stitch_mm, row_mm, ang, outline)
+        pts = layer_stitches(m, mm_per_px, stitch_mm, row_mm, ang, outline, fill_gaps)
         if pts:
             blocks.append((hex_of(color), to_mm(pts, mm_per_px)))
 
@@ -891,10 +932,11 @@ def load_svg_blocks(path, args, report=None):
 
     angles = getattr(args, "angles", None) or {}
     outline = getattr(args, "outline", True)
+    fill_gaps = getattr(args, "fill_gaps", False)
     blocks = []
     for fill, mask in sorted(fills.items(), key=lambda kv: -int(kv[1].sum())):
         ang = angles.get(_norm_hex(fill), args.angle)
-        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, ang, outline)
+        pts = layer_stitches(mask, mm_per_px, stitch_mm, row_mm, ang, outline, fill_gaps)
         if pts:
             blocks.append((fill, to_mm(pts, mm_per_px)))
     # Striche zuletzt (liegen obenauf)
@@ -1158,6 +1200,7 @@ class _Handler(BaseHTTPRequestHandler):
             bg_colors=ignore, bg_color=(qs.get("bgcolor", [""])[0] or None),
             keep_bg=n("keepbg", 0) > 0,
             outline=qs.get("outline", ["0"])[0] not in ("0", "false", "off", ""),
+            fill_gaps=qs.get("fillgaps", ["1"])[0] not in ("0", "false", "off", ""),
             border_color=(qs.get("bcolor", [""])[0] or None),
             border_width=n("bwidth", 3.0),
         )
@@ -1252,6 +1295,8 @@ def main(argv=None):
                     help="randverbundenen Hintergrund NICHT entfernen (1:1, alles sticken)")
     ap.add_argument("--outline", action=argparse.BooleanOptionalAction, default=False,
                     help="zusaetzlich glatte Randlinie je Region sticken (optional)")
+    ap.add_argument("--fill-gaps", action=argparse.BooleanOptionalAction, default=True,
+                    help="kleine Luecken/Fitzen zusticken (Default an; --no-fill-gaps aus)")
     ap.add_argument("--border-color", default=None, metavar="RRGGBB",
                     help="Patch-Rand um das Motiv (Farbe, z. B. #000000); ohne = kein Rand")
     ap.add_argument("--border-width", type=float, default=3.0,

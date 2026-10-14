@@ -78,6 +78,7 @@ The other person unpacks it, needs Python 3 + internet (first run only), then:
 | `--ignore-color RRGGBB` | – | skip this color entirely, repeatable |
 | `--keep-background` | – | do NOT remove the border-connected background (1:1, stitch everything) |
 | `--outline` | off | optional: also stitch a smoothed outline along each region edge |
+| `--fill-gaps` | on | close small notches/pinholes per color and overlap neighbors a bit more (`--no-fill-gaps` to disable) |
 | `--border-color RRGGBB` | – | patch border along the motif silhouette in this color |
 | `--border-width` | `3` | border thickness in mm; `--width` includes the border |
 | `--fabric RRGGBB` | `#ecebe5` | preview fabric color, or `none` for a transparent background |
@@ -138,6 +139,8 @@ preview and download the stitch file.
   palette, editor strokes, …) re-renders the preview automatically after a short
   pause — no need to press Stitch. *Stitch* forces an update and gives the
   download.
+- **Fill gaps**: closes small notches/pinholes and overlaps neighbors so no fabric
+  shows through (on by default).
 - **Extra outline per region**: optional checkbox for a stitched edge per region.
 - **Layout**: drag the divider to resize the sidebar, `⇔` moves the sidebar to
   the other side, `⛶` shows the workspace only; the preview always fits the
